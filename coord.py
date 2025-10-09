@@ -5,7 +5,7 @@ import mplcursors
 import matplotlib
 
 # CHINESE
-matplotlib.rcParams['font.sans-serif'] = ['SimHei']
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Songti SC']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 excel_file = "5数据资料 5-天津新能源智能网联汽车产业集群数据集.xlsx"
