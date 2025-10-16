@@ -17,11 +17,11 @@ def visualize_cost_vs_distance():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
     # Plot 1: Cost vs Distance for different cost rates
-    distances = np.linspace(0.5, 50, 100)
+    distances = np.linspace(1, 50, 49)
     trade_volume = 1000.0
     
-    for rate in [10.0, 100.0, 500.0, 1000.0]:
-        costs = [rate * trade_volume / (d**2) for d in distances]
+    for rate in [0.1, 1.0, 10.0, 100.0]:
+        costs = [rate * trade_volume * d for d in distances]
         ax1.plot(distances, costs, label=f'k = {rate}', linewidth=2)
     
     ax1.set_xlabel('Distance', fontsize=12)
@@ -33,11 +33,11 @@ def visualize_cost_vs_distance():
     ax1.set_ylim(bottom=1)
     
     # Plot 2: Net profit vs Distance
-    revenue = 5000.0
+    revenue = 50000.0
     distance_range = np.linspace(1, 50, 50)
     
-    for rate in [100.0, 500.0]:
-        net_profits = [revenue - (rate * revenue * 0.2 / (d**2)) for d in distance_range]
+    for rate in [0.01, 0.1]:
+        net_profits = [revenue - (rate * revenue * 0.2 * d) for d in distance_range]
         ax2.plot(distance_range, net_profits, label=f'k = {rate}', linewidth=2, marker='o', markersize=3)
     
     ax2.axhline(y=revenue, color='green', linestyle='--', label='Max Profit (no logistics)', alpha=0.5)
@@ -57,31 +57,48 @@ def simulate_clustering_benefit():
     print("\n" + "="*70)
     print("CLUSTERING BENEFIT SIMULATION")
     print("="*70)
+    print("\n配置说明：")
+    print("  - 3个Tier 0公司（Raw材料）提供充足供应")
+    print("  - 7个下游公司从上游购买并产生物流成本")
+    print("  - production_capacity_ratio=0.5 确保供应充足")
+    print("  - logistic_cost_rate=100.0 使成本更明显")
+    print("  - 运行5个时间步以累积物流成本\n")
     
     # Scenario 1: Dispersed companies
     print("\n📍 Scenario 1: DISPERSED LAYOUT")
     print("   Companies spread across the map\n")
     
     config1 = Config()
-    config1.environment.logistic_cost_rate = 100.0
+    config1.environment.logistic_cost_rate = 100.0  # 提高费率使成本更明显
+    # 增加生产能力以确保供应充足
+    config1.environment.production_capacity_ratio = 0.5  # 从0.1提高到0.5
     env1 = IndustryEnv(config1.environment)
     env1.reset()
     
     # Create dispersed companies
+    # 使用更多会产生物流成本的sector（避免过多Tier 0和Other sector）
     locations_dispersed = [
         (10, 10), (90, 90), (10, 90), (90, 10), (50, 50),
         (25, 75), (75, 25), (30, 50), (70, 50), (50, 30)
     ]
     
+    # 使用sector_id: [0, 0, 0, 1, 2, 3, 4, 5, 1, 2]
+    # 3个Tier 0公司（Raw）提供充足供应，7个下游公司会购买并产生物流成本
+    sector_ids = [0, 0, 0, 1, 2, 3, 4, 5, 1, 2]
+    
     for i, loc in enumerate(locations_dispersed):
-        sector_id = i % 7  # Only 7 sectors: 0=Raw, 1=Parts, 2=Electronics, 3=Battery/Motor, 4=OEM, 5=Service, 6=Other
-        env1.companies.append(Company(100000, sector_id, loc, logistic_cost_rate=100.0))
+        sector_id = sector_ids[i]
+        env1.companies.append(Company(100000, sector_id, loc, logistic_cost_rate=1.0))
         env1.num_firms += 1
     
-    # Build supply chain network and run simulation
+    # Build supply chain network and run simulation multiple times
+    # 运行多次以累积物流成本
     if env1.enable_products:
         env1._build_supply_chain_network()
-        env1._simulate_supply_chain()
+        
+        # 运行5个时间步来累积物流成本
+        for step in range(5):
+            env1._simulate_supply_chain()
     
     total_cost_dispersed = sum(c.logistic_cost for c in env1.companies)
     avg_cost_dispersed = total_cost_dispersed / len(env1.companies) if env1.companies else 0
@@ -89,12 +106,18 @@ def simulate_clustering_benefit():
     print(f"   Total logistic cost: ${total_cost_dispersed:,.2f}")
     print(f"   Avg cost per company: ${avg_cost_dispersed:,.2f}")
     
+    # 显示每个公司的详细信息
+    non_zero_costs = sum(1 for c in env1.companies if c.logistic_cost > 0)
+    print(f"   Companies with logistic costs: {non_zero_costs}/{len(env1.companies)}")
+    
     # Scenario 2: Clustered companies
     print("\n📍 Scenario 2: CLUSTERED LAYOUT")
     print("   Companies grouped by supply chain relationships\n")
     
     config2 = Config()
-    config2.environment.logistic_cost_rate = 100.0
+    config2.environment.logistic_cost_rate = 100.0  # 提高费率使成本更明显
+    # 增加生产能力以确保供应充足
+    config2.environment.production_capacity_ratio = 0.5  # 从0.1提高到0.5
     env2 = IndustryEnv(config2.environment)
     env2.reset()
     
@@ -104,21 +127,33 @@ def simulate_clustering_benefit():
         (50, 50), (52, 50), (50, 52), (48, 50), (50, 48)   # Cluster 2
     ]
     
+    # 使用相同的sector分配以便公平比较
+    # 3个Tier 0公司（Raw）提供充足供应，7个下游公司会购买并产生物流成本
+    sector_ids = [0, 0, 0, 1, 2, 3, 4, 5, 1, 2]
+    
     for i, loc in enumerate(locations_clustered):
-        sector_id = i % 7  # Only 7 sectors: 0=Raw, 1=Parts, 2=Electronics, 3=Battery/Motor, 4=OEM, 5=Service, 6=Other
-        env2.companies.append(Company(100000, sector_id, loc, logistic_cost_rate=100.0))
+        sector_id = sector_ids[i]
+        env2.companies.append(Company(100000, sector_id, loc, logistic_cost_rate=1.0))
         env2.num_firms += 1
     
-    # Build supply chain network and run simulation
+    # Build supply chain network and run simulation multiple times
+    # 运行多次以累积物流成本
     if env2.enable_products:
         env2._build_supply_chain_network()
-        env2._simulate_supply_chain()
+        
+        # 运行5个时间步来累积物流成本
+        for step in range(5):
+            env2._simulate_supply_chain()
     
     total_cost_clustered = sum(c.logistic_cost for c in env2.companies)
     avg_cost_clustered = total_cost_clustered / len(env2.companies) if env2.companies else 0
     
     print(f"   Total logistic cost: ${total_cost_clustered:,.2f}")
     print(f"   Avg cost per company: ${avg_cost_clustered:,.2f}")
+    
+    # 显示每个公司的详细信息
+    non_zero_costs = sum(1 for c in env2.companies if c.logistic_cost > 0)
+    print(f"   Companies with logistic costs: {non_zero_costs}/{len(env2.companies)}")
     
     # Comparison
     print("\n📊 COMPARISON")
@@ -139,7 +174,7 @@ def simulate_clustering_benefit():
     tab10 = get_cmap('tab10')
     for i, company in enumerate(env1.companies):
         color = tab10(company.sector_id % 7)
-        size = 200 + company.logistic_cost / 10
+        size = 200 + company.logistic_cost / 100
         ax1.scatter(company.x, company.y, c=[color], s=size, alpha=0.6, edgecolors='black')
         ax1.text(company.x, company.y+3, f'${company.logistic_cost:.0f}', 
                 ha='center', fontsize=8, fontweight='bold')
@@ -155,7 +190,7 @@ def simulate_clustering_benefit():
     # Plot clustered
     for i, company in enumerate(env2.companies):
         color = tab10(company.sector_id % 7)
-        size = 200 + company.logistic_cost / 10
+        size = 200 + company.logistic_cost / 100
         ax2.scatter(company.x, company.y, c=[color], s=size, alpha=0.6, edgecolors='black')
         ax2.text(company.x, company.y+2, f'${company.logistic_cost:.0f}', 
                 ha='center', fontsize=8, fontweight='bold')

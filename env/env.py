@@ -115,7 +115,7 @@ class IndustryEnv(gym.Env):
             self.trade_volume_fraction = 0.01
             self.revenue_rate = 1.0
             self.min_distance_epsilon = 0.1
-            self.logistic_cost_rate = 100.0
+            self.logistic_cost_rate = 1.0
             self.disable_logistic_costs = False
             self.investment_multiplier = 0.01
             self.creation_reward = 50.0

@@ -18,7 +18,7 @@
     "revenue_rate": 1.0,
     "enable_supply_chain": true,
     "min_distance_epsilon": 0.1,
-    "logistic_cost_rate": 100.0,
+    "logistic_cost_rate": 1.0,
     "investment_multiplier": 0.01,
     "creation_reward": 50.0,
     "invalid_action_penalty": -20.0,

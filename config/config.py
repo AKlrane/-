@@ -44,7 +44,7 @@ class EnvironmentConfig:
     min_distance_epsilon: float = 0.1
     
     # Logistic cost parameters
-    logistic_cost_rate: float = 100.0
+    logistic_cost_rate: float = 1.0
     
     # Reward parameters
     investment_multiplier: float = 0.01

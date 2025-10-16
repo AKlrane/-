@@ -21,10 +21,10 @@ class Company:
         sector_id: int,
         location: Tuple[float, float],
         op_cost_rate: float = 0.05,
-        logistic_cost_rate: float = 100.0,
+        logistic_cost_rate: float = 1.0,
         revenue_rate: float = 1.0,
         min_distance_epsilon: float = 0.1,
-        production_capacity_ratio: float = 0.1,
+        production_capacity_ratio: float = 0.1, # Max production = capital * ratio
         purchase_budget_ratio: float = 0.2,
     ):
         self.capital = capital
@@ -99,11 +99,10 @@ class Company:
         distance = self.distance_to(other)
         # Prevent division by zero for co-located companies
         # Use configured epsilon
-        distance = max(distance, self.min_distance_epsilon)
 
         # Inverse square law: cost increases with volume, decreases with square of distance
         # logistic_cost_rate controls the magnitude
-        cost = self.logistic_cost_rate * trade_volume / (distance**2)
+        cost = self.logistic_cost_rate * trade_volume * distance
 
         return cost
 
