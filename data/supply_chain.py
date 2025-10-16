@@ -9,6 +9,7 @@ import pandas as pd
 import json
 import numpy as np
 import re
+import math
 from typing import List, Optional, Tuple
 
 # === Sector Class Definition ===
@@ -146,6 +147,69 @@ def parse_registration_status(status: str) -> Tuple[bool, Optional[str]]:
     return is_active, death_date
 
 
+def convert_latlon_to_xy(df: pd.DataFrame, lat_col: str, lon_col: str) -> pd.DataFrame:
+    """
+    Convert latitude/longitude coordinates to x,y coordinates in km.
+    Uses the same projection method as plot_coordinates.py.
+    
+    Args:
+        df: DataFrame with lat/lon columns
+        lat_col: Name of latitude column
+        lon_col: Name of longitude column
+        
+    Returns:
+        DataFrame with added 'x' and 'y' columns (in km, relative to center)
+    """
+    # Filter out rows with missing coordinates
+    valid_coords = df[[lat_col, lon_col]].notna().all(axis=1)
+    
+    if valid_coords.sum() == 0:
+        print("⚠ No valid coordinates found, skipping coordinate conversion")
+        df['x'] = None
+        df['y'] = None
+        return df
+    
+    # Calculate center point (using only valid coordinates)
+    lat_center = df.loc[valid_coords, lat_col].mean()
+    lon_center = df.loc[valid_coords, lon_col].mean()
+    
+    print(f"✓ Center point (lat, lon): {lat_center:.6f}, {lon_center:.6f}")
+    
+    # Earth radius in km
+    R = 6371
+    lat0 = math.radians(lat_center)
+    lon0 = math.radians(lon_center)
+    
+    def project(lat, lon):
+        """Project lat/lon to x,y coordinates in km relative to center."""
+        if pd.isna(lat) or pd.isna(lon):
+            return None, None
+        
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        x = R * (lon_rad - lon0) * math.cos(lat0)
+        y = R * (lat_rad - lat0)
+        return x, y
+    
+    # Apply projection to all rows
+    coordinates = df.apply(
+        lambda row: project(row[lat_col], row[lon_col]), 
+        axis=1
+    )
+    
+    df['x'], df['y'] = zip(*coordinates)
+    
+    # Print statistics
+    valid_x = df['x'].notna().sum()
+    print(f"✓ Converted {valid_x} / {len(df)} companies to x,y coordinates")
+    
+    if valid_x > 0:
+        print(f"  X range: {df['x'].min():.2f} to {df['x'].max():.2f} km")
+        print(f"  Y range: {df['y'].min():.2f} to {df['y'].max():.2f} km")
+    
+    return df
+
+
 # === Main Program ===
 if __name__ == "__main__":
     # 1. Read Excel file
@@ -159,8 +223,17 @@ if __name__ == "__main__":
     company_size_col = "企业规模"  # Company size column
     establishment_date_col = "成立日期"  # Establishment date column
     registration_status_col = "登记状态"  # Registration status column
+    lat_col = "纬度"  # Latitude column
+    lon_col = "经度"  # Longitude column
+    
+    print("="*70)
+    print("COMPANY DATA PROCESSING")
+    print("="*70)
+    print(f"Reading from: {file_path}")
+    print(f"Sheet: {sheet_name}")
     
     df = pd.read_excel(file_path, sheet_name=sheet_name)
+    print(f"✓ Loaded {len(df)} companies")
 
     # 2. Classify companies by sector
     df["Category"] = df.apply(
@@ -182,17 +255,27 @@ if __name__ == "__main__":
         df[company_size_col] = "XS(微型)"  # Default to micro if no size column
     
     # 4. Generate capital based on company size
-    print("✓ Generating initial capital based on company size...")
+    print("\n✓ Generating initial capital based on company size...")
     np.random.seed(42)  # For reproducibility
     df["initial_capital"] = df[company_size_col].apply(map_size_to_capital)
     
+    # 5. Convert latitude/longitude to x,y coordinates
+    print("\n✓ Converting latitude/longitude to x,y coordinates...")
+    if lat_col in df.columns and lon_col in df.columns:
+        df = convert_latlon_to_xy(df, lat_col, lon_col)
+    else:
+        print(f"⚠ Columns '{lat_col}' or '{lon_col}' not found, skipping coordinate conversion")
+        df['x'] = None
+        df['y'] = None
+    
     # Prepare output data with English keys
+    print("\n✓ Preparing output data...")
     output_data = []
     for _, row in df.iterrows():
         # Parse registration status to get active state and death date
         is_active, death_date = parse_registration_status(row[registration_status_col])
         
-        output_data.append({
+        company_dict = {
             "company_name": row[company_name_col],
             "sector": row["Category"],
             "company_size": row[company_size_col],
@@ -200,13 +283,24 @@ if __name__ == "__main__":
             "establishment_date": str(row[establishment_date_col]) if pd.notna(row[establishment_date_col]) else None,
             "active": is_active,
             "death_date": death_date
-        })
+        }
+        
+        # Add coordinates if available
+        if pd.notna(row['x']) and pd.notna(row['y']):
+            company_dict["x"] = round(row['x'], 4)
+            company_dict["y"] = round(row['y'], 4)
+        else:
+            company_dict["x"] = None
+            company_dict["y"] = None
+        
+        output_data.append(company_dict)
     
     # 6. Save company classification results (CSV)
+    print("\n✓ Saving results...")
     output_csv = "company_classification.csv"
     output_df = pd.DataFrame(output_data)
     output_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
-    print(f"✅ Generated: {output_csv}")
+    print(f"✅ Generated: {output_csv} ({len(output_df)} companies)")
 
     # 7. Define supply chain relationships
     relation_map = {
@@ -290,3 +384,15 @@ if __name__ == "__main__":
     ])
     print(capital_by_sector.to_string())
     print("="*70)
+    
+    # 16. Print coordinate statistics
+    if 'x' in df.columns and 'y' in df.columns:
+        valid_coords = df[['x', 'y']].notna().all(axis=1).sum()
+        print("\n" + "="*70)
+        print("Coordinate Statistics")
+        print("="*70)
+        print(f"Companies with valid coordinates: {valid_coords} / {len(df)} ({valid_coords/len(df)*100:.1f}%)")
+        if valid_coords > 0:
+            print(f"X range: {df['x'].min():.2f} to {df['x'].max():.2f} km (span: {df['x'].max() - df['x'].min():.2f} km)")
+            print(f"Y range: {df['y'].min():.2f} to {df['y'].max():.2f} km (span: {df['y'].max() - df['y'].min():.2f} km)")
+        print("="*70)
