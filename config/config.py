@@ -100,6 +100,7 @@ class TrainingConfig:
     n_epochs: int = 10
     seed: int = 42
     verbose: int = 1
+    device: str = "auto"  # "auto", "cuda", "cpu", "cuda:0", "cuda:1", etc.
     
     # Checkpointing and logging
     log_dir: str = "./logs"

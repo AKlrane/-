@@ -58,7 +58,7 @@ A reinforcement learning environment for simulating spatial economic dynamics wi
 uv sync
 
 # Option 2: Install dependencies individually
-uv pip install gymnasium numpy matplotlib
+uv pip install gymnasium numpy matplotlib tqdm rich
 
 # Optional: Install RL framework
 uv pip install stable-baselines3 tensorboard

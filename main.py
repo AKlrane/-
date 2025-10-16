@@ -76,6 +76,29 @@ def train_stable_baselines3(config: Config):
     
     print(f"🧠 Network: [1024×5] → ~20-30 MB | Envs: {config.training.num_envs} | LR: {config.training.learning_rate}")
     
+    # Determine device (GPU if available)
+    import torch
+    device = config.training.device
+    
+    # Handle "auto" device selection
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+            print(f"🎮 GPU detected: {torch.cuda.get_device_name(0)}")
+        else:
+            device = "cpu"
+            print("💻 Using CPU (no GPU detected)")
+    else:
+        # Manual device specification
+        if "cuda" in device and torch.cuda.is_available():
+            gpu_id = 0 if device == "cuda" else int(device.split(":")[1])
+            print(f"🎮 Using GPU: {torch.cuda.get_device_name(gpu_id)} ({device})")
+        elif device == "cpu":
+            print("💻 Using CPU (manual)")
+        else:
+            print(f"⚠️  Device '{device}' not available, falling back to CPU")
+            device = "cpu"
+    
     # Create model
     model = AlgorithmClass(
         "MultiInputPolicy",
@@ -87,7 +110,8 @@ def train_stable_baselines3(config: Config):
         verbose=1,
         tensorboard_log=config.training.log_dir,
         seed=config.training.seed,
-        policy_kwargs=policy_kwargs
+        policy_kwargs=policy_kwargs,
+        device=device
     )
     
     # Create callbacks
@@ -298,6 +322,8 @@ def main():
                        help="Discount factor (overrides config)")
     parser.add_argument("--seed", type=int, default=None,
                        help="Random seed (overrides config)")
+    parser.add_argument("--device", type=str, default=None,
+                       help="Device to use: 'auto', 'cuda', 'cpu', 'cuda:0', etc. (overrides config)")
     
     # Environment parameters (can override config)
     parser.add_argument("--env-size", type=float, default=None,
@@ -355,7 +381,9 @@ def main():
         global_config.training.gamma = args.gamma
     if args.seed is not None:
         global_config.training.seed = args.seed
-    
+    if args.device is not None:
+        global_config.training.device = args.device
+
     # Environment overrides
     if args.env_size is not None:
         global_config.environment.size = args.env_size
