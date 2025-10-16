@@ -1,6 +1,6 @@
 """
 Main training script for Industry Simulation RL agents.
-Supports multiple RL frameworks: Stable-Baselines3, Ray RLlib, and custom training.
+Supports Stable-Baselines3 framework and custom training loops.
 """
 
 import argparse
@@ -38,10 +38,6 @@ def train_stable_baselines3(config: Config):
         print("Install with: pip install stable-baselines3")
         return
     
-    print("="*60)
-    print("Training with Stable-Baselines3")
-    print("="*60)
-    
     # Create vectorized environment
     def make_env(i):
         def _init():
@@ -67,12 +63,20 @@ def train_stable_baselines3(config: Config):
     
     AlgorithmClass = algorithm_map[config.training.algorithm]
     
-    print(f"\nAlgorithm: {config.training.algorithm.upper()}")
-    print(f"Total timesteps: {config.training.total_timesteps:,}")
-    print(f"Number of environments: {config.training.num_envs}")
-    print(f"Learning rate: {config.training.learning_rate}")
+    # Configure large MLP network architecture (~20-30 MB model)
+    import torch.nn as nn
     
-        # Create model
+    policy_kwargs = dict(
+        net_arch=dict(
+            pi=[1024, 1024, 512, 512, 256],  # Actor: 5 layers
+            vf=[1024, 1024, 512, 512, 256]   # Critic: 5 layers
+        ),
+        activation_fn=nn.ReLU,
+    )
+    
+    print(f"🧠 Network: [1024×5] → ~20-30 MB | Envs: {config.training.num_envs} | LR: {config.training.learning_rate}")
+    
+    # Create model
     model = AlgorithmClass(
         "MultiInputPolicy",
         vec_env,
@@ -82,7 +86,8 @@ def train_stable_baselines3(config: Config):
         gamma=config.training.gamma,
         verbose=1,
         tensorboard_log=config.training.log_dir,
-        seed=config.training.seed
+        seed=config.training.seed,
+        policy_kwargs=policy_kwargs
     )
     
     # Create callbacks
@@ -102,20 +107,28 @@ def train_stable_baselines3(config: Config):
     )
     
     # Training
-    print("\n" + "="*60)
-    print("Starting training...")
-    print("="*60 + "\n")
+    print("\n⏳ Starting training...\n")
     
     start_time = time.time()
     
     try:
-        model.learn(
-            total_timesteps=config.training.total_timesteps,
-            callback=[checkpoint_callback, eval_callback],
-            progress_bar=False
-        )
+        # Try to use progress bar with tqdm
+        try:
+            model.learn(
+                total_timesteps=config.training.total_timesteps,
+                callback=[checkpoint_callback, eval_callback],
+                progress_bar=True
+            )
+        except ImportError:
+            # If tqdm not available, train without progress bar
+            print("⚠️  tqdm not available, training without progress bar...")
+            model.learn(
+                total_timesteps=config.training.total_timesteps,
+                callback=[checkpoint_callback, eval_callback],
+                progress_bar=False
+            )
     except KeyboardInterrupt:
-        print("\n\nTraining interrupted by user.")
+        print("\n\n⛔ Training interrupted by user.")
     
     training_time = time.time() - start_time
     
@@ -123,11 +136,10 @@ def train_stable_baselines3(config: Config):
     final_path = os.path.join(config.training.checkpoint_dir, f"{config.training.algorithm}_final")
     model.save(final_path)
     
-    print("\n" + "="*60)
-    print("Training completed!")
-    print("="*60)
-    print(f"Training time: {training_time/60:.2f} minutes")
-    print(f"Final model saved to: {final_path}")
+    print("\n" + "="*70)
+    print(f"✅ Training completed in {training_time/60:.1f} minutes ({training_time/3600:.2f} hours)")
+    print(f"💾 Model saved: {final_path}")
+    print("="*70)
     
     # Evaluate final model
     print("\nEvaluating final model...")
@@ -137,109 +149,6 @@ def train_stable_baselines3(config: Config):
     eval_env.close()
     
     return model
-
-
-def train_rllib(config: Config):
-    """Train using Ray RLlib."""
-    try:
-        import ray
-        from ray import tune
-        from ray.rllib.algorithms.ppo import PPOConfig
-        from ray.rllib.algorithms.a2c import A2CConfig
-        from ray.tune.registry import register_env
-    except ImportError:
-        print("ERROR: Ray RLlib not installed!")
-        print("Install with: pip install ray[rllib]")
-        return
-    
-    print("="*60)
-    print("Training with Ray RLlib")
-    print("="*60)
-    
-    # Register environment
-    def env_creator(env_config):
-        if config:
-            return IndustryEnv(config.environment)
-        else:
-            return IndustryEnv()
-    
-    register_env("IndustryEnv-v0", env_creator)
-    
-    # Initialize Ray
-    ray.init(ignore_reinit_error=True)
-    
-    # Select algorithm
-    algorithm_map = {
-        "ppo": PPOConfig,
-        "a2c": A2CConfig,
-    }
-    
-    if config.training.algorithm not in algorithm_map:
-        print(f"Unknown algorithm: {config.training.algorithm}. Using PPO.")
-        config.training.algorithm = "ppo"
-    
-    ConfigClass = algorithm_map[config.training.algorithm]
-    
-    print(f"\nAlgorithm: {config.training.algorithm.upper()}")
-    print(f"Total timesteps: {config.training.total_timesteps:,}")
-    
-    # Configure algorithm
-    algo_config = (
-        ConfigClass()
-        .environment("IndustryEnv-v0")
-        .framework("torch")
-        .training(
-            lr=config.training.learning_rate,
-            gamma=config.training.gamma,
-            train_batch_size=config.training.batch_size * config.training.num_envs,
-        )
-        .rollouts(num_rollout_workers=config.training.num_envs)
-        .resources(num_gpus=0)
-    )
-    
-    # Build algorithm
-    algo = algo_config.build()
-    
-    print("\n" + "="*60)
-    print("Starting training...")
-    print("="*60 + "\n")
-    
-    start_time = time.time()
-    num_iterations = config.training.total_timesteps // (config.training.n_steps * config.training.num_envs)
-    
-    try:
-        for i in range(num_iterations):
-            result = algo.train()
-            
-            # Print progress
-            if (i + 1) % 10 == 0:
-                print(f"Iteration {i+1}/{num_iterations}")
-                print(f"  Episode reward mean: {result['episode_reward_mean']:.2f}")
-                print(f"  Episodes total: {result['episodes_total']}")
-            
-            # Save checkpoint
-            if (i + 1) % (config.training.save_freq // (config.training.n_steps * config.training.num_envs)) == 0:
-                checkpoint_path = algo.save(config.training.checkpoint_dir)
-                print(f"  Checkpoint saved: {checkpoint_path}")
-    
-    except KeyboardInterrupt:
-        print("\n\nTraining interrupted by user.")
-    
-    training_time = time.time() - start_time
-    
-    # Save final checkpoint
-    final_checkpoint = algo.save(config.training.checkpoint_dir)
-    
-    print("\n" + "="*60)
-    print("Training completed!")
-    print("="*60)
-    print(f"Training time: {training_time/60:.2f} minutes")
-    print(f"Final checkpoint: {final_checkpoint}")
-    
-    algo.stop()
-    ray.shutdown()
-    
-    return algo
 
 
 def train_custom(config: Config):
@@ -473,11 +382,7 @@ def main():
     if args.visualize_freq is not None:
         global_config.training.visualize_freq = args.visualize_freq
     
-    # Print final configuration
-    print("\n" + "="*70)
-    print("FINAL CONFIGURATION (after overrides)")
-    print("="*70)
-    global_config.print_summary()
+    # Configuration loaded (simplified output)
     
     # Create timestamp-based directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -494,35 +399,25 @@ def main():
     Path(global_config.training.log_dir).mkdir(parents=True, exist_ok=True)
     Path(global_config.training.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     
-    # Print configuration
-    print("\n" + "="*60)
-    print("INDUSTRY SIMULATION RL TRAINING")
-    print("="*60)
-    print(f"Framework: {global_config.training.framework.upper()}")
-    print(f"Algorithm: {global_config.training.algorithm.upper()}")
-    print(f"Mode: {args.mode}")
-    print(f"Timesteps: {global_config.training.total_timesteps:,}")
-    print(f"Seed: {global_config.training.seed}")
-    print(f"Log directory: {global_config.training.log_dir}")
-    print(f"Checkpoint directory: {global_config.training.checkpoint_dir}")
-    print("="*60 + "\n")
+    # Print simplified training info
+    print("\n" + "="*70)
+    print(f"🚀 Training: {global_config.training.algorithm.upper()} | {global_config.training.total_timesteps:,} steps | Seed {global_config.training.seed}")
+    print(f"📁 Logs: {global_config.training.log_dir}")
+    print("="*70 + "\n")
     
     # Save config
     config_path = os.path.join(global_config.training.log_dir, "config.json")
     global_config.to_json(config_path)
-    print(f"Configuration saved to {config_path}\n")
     
     # Execute based on mode
     if args.mode == "train":
         # Training
         if global_config.training.framework == "sb3":
             model = train_stable_baselines3(global_config)
-        elif global_config.training.framework == "rllib":
-            model = train_rllib(global_config)
         elif global_config.training.framework == "custom":
             model = train_custom(global_config)
         else:
-            print(f"Unknown framework: {global_config.training.framework}")
+            print(f"Unknown framework: {global_config.training.framework}. Only 'sb3' and 'custom' are supported.")
             return
     
     elif args.mode == "eval":
