@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
-from env import NUM_SECTORS
+from env.sector import NUM_SECTORS
 
 
 @dataclass

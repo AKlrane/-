@@ -22,7 +22,7 @@ def create_env(config: Config, seed: Optional[int] = None):
     """Create a single environment instance."""
     env = IndustryEnv(config.environment)
     if seed is not None:
-        env.reset(seed=seed)
+        env.reset(seed=seed, options={"initial_firms": config.environment.initial_firms})
     return env
 
 
@@ -30,7 +30,7 @@ def train_stable_baselines3(config: Config):
     """Train using Stable-Baselines3."""
     try:
         from stable_baselines3 import PPO, A2C, SAC
-        from stable_baselines3.common.env_util import make_vec_env
+        from stable_baselines3.common.vec_env import DummyVecEnv
         from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
         from stable_baselines3.common.monitor import Monitor
     except ImportError:
@@ -43,14 +43,14 @@ def train_stable_baselines3(config: Config):
     print("="*60)
     
     # Create vectorized environment
-    def make_env(rank):
+    def make_env(i):
         def _init():
-            env = create_env(config, seed=config.training.seed + rank)
-            env = Monitor(env, filename=os.path.join(config.training.log_dir, f"env_{rank}"))
+            env = create_env(config, seed=config.training.seed + i)
+            env = Monitor(env, filename=os.path.join(config.training.log_dir, f"env_{i}"))
             return env
         return _init
     
-    vec_env = make_vec_env(make_env, n_envs=config.training.num_envs)
+    vec_env = DummyVecEnv([make_env(i) for i in range(config.training.num_envs)])
     
     # Create evaluation environment
     eval_env = Monitor(create_env(config, seed=config.training.seed + 1000))
@@ -112,7 +112,7 @@ def train_stable_baselines3(config: Config):
         model.learn(
             total_timesteps=config.training.total_timesteps,
             callback=[checkpoint_callback, eval_callback],
-            progress_bar=True
+            progress_bar=False
         )
     except KeyboardInterrupt:
         print("\n\nTraining interrupted by user.")

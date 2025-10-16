@@ -169,55 +169,21 @@ class IndustryEnv(gym.Env):
             }
         )
 
-        # Multi-action space: agent can perform 0 to max_actions_per_step actions
-        # Each action can be invest or create
-        self.action_space = gym.spaces.Dict(
-            {
-                "num_actions": gym.spaces.Discrete(
-                    self.max_actions_per_step + 1
-                ),  # 0 to max_actions_per_step
-                "actions": gym.spaces.Tuple(
-                    [
-                        gym.spaces.Dict(
-                            {
-                                "op": gym.spaces.Discrete(2),  # 0 = invest, 1 = create
-                                "invest": gym.spaces.Dict(
-                                    {
-                                        "firm_id": gym.spaces.Discrete(
-                                            self.max_company
-                                        ),
-                                        "amount": gym.spaces.Box(
-                                            low=0.0,
-                                            high=1_000_000.0,
-                                            shape=(1,),
-                                            dtype=np.float32,
-                                        ),
-                                    }
-                                ),
-                                "create": gym.spaces.Dict(
-                                    {
-                                        "initial_capital": gym.spaces.Box(
-                                            low=1000.0,
-                                            high=1_000_000.0,
-                                            shape=(1,),
-                                            dtype=np.float32,
-                                        ),
-                                        "sector": gym.spaces.Discrete(self.num_sectors),
-                                        "location": gym.spaces.Box(
-                                            low=0.0,
-                                            high=self.size,
-                                            shape=(2,),
-                                            dtype=np.float32,
-                                        ),
-                                    }
-                                ),
-                            }
-                        )
-                        for _ in range(self.max_actions_per_step)
-                    ]
-                ),
-            }
+        # Simplified continuous action space for single action per step
+        # Box action space with 4 continuous components:
+        #   [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
+        #   [1]: amount (continuous value in normalized range 0-1)
+        #   [2]: x coordinate (continuous value in range -20 to 20 km)
+        #   [3]: y coordinate (continuous value in range -20 to 20 km)
+        self.action_space = gym.spaces.Box(
+            low=np.array([0.0, 0.0, -20.0, -20.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 20.0, 20.0], dtype=np.float32),
+            dtype=np.float32
         )
+        
+        # Map range: ±20 km
+        self.map_min = -20.0
+        self.map_max = 20.0
 
         self.current_step = 0
 
@@ -376,11 +342,11 @@ class IndustryEnv(gym.Env):
 
         Args:
             info: Information dict containing:
-                - action_results: List of individual action results
-                - num_actions: Number of actions taken
-                - num_valid_actions: Number of successful actions
-                - num_invalid_actions: Number of failed actions
-                - investment_amount: Total amount invested across all actions
+                - action_result: Result of the single action taken
+                - action_type: Type of action (0=invest, 1=create)
+                - num_valid_actions: 1 if successful, 0 if failed
+                - num_invalid_actions: 0 if successful, 1 if failed
+                - investment_amount: Amount invested (if applicable)
                 - total_profit: Total profit from all companies
                 - total_logistic_cost: Total logistic costs
                 - num_firms: Current number of firms
@@ -391,32 +357,29 @@ class IndustryEnv(gym.Env):
         """
         reward = 0.0
 
-        # Calculate action-specific rewards for each action taken
-        action_results = info.get("action_results", [])
+        # Calculate action-specific reward
+        action_result = info.get("action_result", "unknown")
 
-        for action_info in action_results:
-            action_result = action_info.get("result", "unknown")
+        if action_result == "valid_invest":
+            # Reward for successful investment
+            investment_amount = info.get("investment_amount", 0.0)
+            reward += investment_amount * self.investment_multiplier
 
-            if action_result == "valid_invest":
-                # Reward for successful investment
-                investment_amount = action_info.get("investment_amount", 0.0)
-                reward += investment_amount * self.investment_multiplier
+        elif action_result == "valid_create":
+            # Reward for successful company creation
+            reward += self.creation_reward
 
-            elif action_result == "valid_create":
-                # Reward for successful company creation
-                reward += self.creation_reward
+        elif action_result in ["invalid_firm", "invalid_no_firms"]:
+            # Penalty for invalid firm selection
+            reward += self.invalid_firm_penalty
 
-            elif action_result == "invalid_firm":
-                # Penalty for invalid firm ID
-                reward += self.invalid_firm_penalty
-
-            elif action_result in [
-                "invalid_amount",
-                "invalid_location",
-                "invalid_capacity",
-            ]:
-                # Penalty for invalid action parameters
-                reward += self.invalid_action_penalty
+        elif action_result in [
+            "invalid_amount",
+            "invalid_location",
+            "invalid_capacity",
+        ]:
+            # Penalty for invalid action parameters
+            reward += self.invalid_action_penalty
 
         # Add profit-based reward component using configured multiplier
         total_profit = info.get("total_profit", 0.0)
@@ -427,7 +390,6 @@ class IndustryEnv(gym.Env):
         # - Efficiency bonus for low logistic costs
         # - Growth bonus for increasing number of firms
         # - Stability bonus for low death rate
-        # - Bonus for taking multiple successful actions per step
 
         return reward
 
@@ -446,11 +408,16 @@ class IndustryEnv(gym.Env):
             for _ in range(options["initial_firms"]):
                 sector_id = int(self.np_random.integers(0, self.num_sectors))
                 # Use configured capital range
-                capital = float(
-                    self.np_random.uniform(
-                        self.initial_capital_min, self.initial_capital_max
-                    )
-                )
+                # capital = float(
+                #     self.np_random.uniform(
+                #         self.initial_capital_min, self.initial_capital_max
+                #     )
+                # )
+                capital = self.initial_capital_max + 1
+                while capital <self.initial_capital_min or capital > self.initial_capital_max:
+                    capital = self.np_random.beta(1.5,3.5)*self.initial_capital_max
+                capital = float(capital)
+                
 
                 # Use fixed or random locations based on ablation setting
                 if self.fixed_locations:
@@ -488,12 +455,16 @@ class IndustryEnv(gym.Env):
 
         return self._get_observation(), {}
 
-    def step(self, action: Dict[str, Any]) -> Tuple[Dict, float, bool, bool, Dict]:
+    def step(self, action: np.ndarray) -> Tuple[Dict, float, bool, bool, Dict]:
         """
-        Execute one step in the environment based on the action(s).
+        Execute one step in the environment based on a single continuous action.
 
         Args:
-            action: Dict with 'num_actions' and 'actions' list containing multiple sub-actions
+            action: Numpy array with 4 continuous values:
+                [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
+                [1]: amount (0.0-1.0, normalized)
+                [2]: x coordinate (-20.0 to 20.0 km)
+                [3]: y coordinate (-20.0 to 20.0 km)
 
         Returns:
             observation, reward, terminated, truncated, info
@@ -501,111 +472,101 @@ class IndustryEnv(gym.Env):
         self.current_step += 1
 
         # Track action results for reward calculation
-        action_results = []
-        total_investment_amount = 0.0
+        action_result = "unknown"
+        investment_amount = 0.0
         num_valid_actions = 0
         num_invalid_actions = 0
 
-        # Get number of actions to execute
-        num_actions = int(action.get("num_actions", 0))
-        num_actions = min(num_actions, self.max_actions_per_step)  # Clamp to max
+        # Decode action (ensure it's a numpy array)
+        action = np.asarray(action, dtype=np.float32)
+        
+        # Determine action type (invest or create)
+        action_type_value = float(action[0])
+        is_create = action_type_value >= 0.5
+        
+        # Get normalized amount (0-1) and denormalize it
+        amount_normalized = float(np.clip(action[1], 0.0, 1.0))
+        
+        # Get coordinates (clamp to valid range)
+        x_coord = float(np.clip(action[2], self.map_min, self.map_max))
+        y_coord = float(np.clip(action[3], self.map_min, self.map_max))
 
-        # Execute each action
-        for action_idx in range(num_actions):
-            single_action = action["actions"][action_idx]
-            action_result = "unknown"
-            investment_amount = 0.0
+        if not is_create:
+            # Investment action
+            # Denormalize amount to investment range
+            amt = self.investment_min + amount_normalized * (self.investment_max - self.investment_min)
+            
+            # Find the closest company to (x_coord, y_coord)
+            if self.num_firms > 0:
+                min_distance = float('inf')
+                closest_company_idx = 0
+                
+                for idx, company in enumerate(self.companies):
+                    dist = np.sqrt(
+                        (company.location[0] - x_coord) ** 2 +
+                        (company.location[1] - y_coord) ** 2
+                    )
+                    if dist < min_distance:
+                        min_distance = dist
+                        closest_company_idx = idx
+                
+                # Invest in the closest company
+                self.companies[closest_company_idx].invest(amt)
+                action_result = "valid_invest"
+                investment_amount = amt
+                num_valid_actions += 1
+            else:
+                # No companies to invest in
+                action_result = "invalid_no_firms"
+                num_invalid_actions += 1
 
-            # Parse the action operation
-            op = int(single_action.get("op", 0))
-
-            if op == 0:
-                # Invest in existing firm
-                fid = int(single_action["invest"]["firm_id"])
-                amt = float(np.asarray(single_action["invest"]["amount"]).item())
-
-                # Validate investment amount is within configured range
-                if (
-                    0 <= fid < self.num_firms
-                    and self.investment_min <= amt <= self.investment_max
-                ):
-                    # Apply investment to the company
-                    self.companies[fid].invest(amt)
-                    action_result = "valid_invest"
-                    investment_amount = amt
-                    total_investment_amount += amt
-                    num_valid_actions += 1
-                else:
-                    # Invalid firm ID or invalid investment amount
-                    if fid >= self.num_firms:
-                        action_result = "invalid_firm"
-                    else:
-                        action_result = "invalid_amount"
-                    num_invalid_actions += 1
-
-            elif op == 1:
-                # Create new firm
-                init_capital = float(
-                    np.asarray(single_action["create"]["initial_capital"]).item()
-                )
-                sector_id = int(single_action["create"]["sector"])
-                location_array = np.asarray(single_action["create"]["location"])
-                location = (float(location_array[0]), float(location_array[1]))
-
-                # Validate capital is within configured range
-                capital_valid = (
-                    self.new_company_capital_min
-                    <= init_capital
-                    <= self.new_company_capital_max
-                )
-
-                if self.num_firms < self.max_company and capital_valid:
-                    # For fixed locations, override the action location
-                    if self.fixed_locations:
-                        idx = len(self.companies)
-                        grid_size = int(np.sqrt(self.max_company)) + 1
-                        x = (idx % grid_size) * (self.size / grid_size)
-                        y = (idx // grid_size) * (self.size / grid_size)
-                        location = (float(x), float(y))
-
-                    # Validate location is within bounds
-                    if 0 <= location[0] <= self.size and 0 <= location[1] <= self.size:
-                        new_company = Company(
-                            init_capital,
-                            sector_id,
-                            location,
-                            op_cost_rate=self.op_cost_rate,
-                            logistic_cost_rate=self.logistic_cost_rate,
-                            revenue_rate=self.revenue_rate,
-                            min_distance_epsilon=self.min_distance_epsilon,
-                            production_capacity_ratio=self.production_capacity_ratio,
-                            purchase_budget_ratio=self.purchase_budget_ratio,
-                        )
-                        self.companies.append(new_company)
-                        self.num_firms += 1
-                        action_result = "valid_create"
-                        num_valid_actions += 1
-
-                        # Rebuild supply chain network when new company is added
-                        if self.enable_products:
-                            self._build_supply_chain_network()
-                    else:
-                        # Invalid location
-                        action_result = "invalid_location"
-                        num_invalid_actions += 1
-                else:
-                    # Invalid creation (capacity full or insufficient capital)
-                    action_result = "invalid_capacity"
-                    num_invalid_actions += 1
-
-            # Record this action's result
-            action_results.append(
-                {
-                    "action_idx": action_idx,
-                    "result": action_result,
-                    "investment_amount": investment_amount,
-                }
+        else:
+            # Create new company
+            # Denormalize amount to creation capital range
+            init_capital = self.new_company_capital_min + amount_normalized * (
+                self.new_company_capital_max - self.new_company_capital_min
             )
+            
+            # Choose sector randomly
+            sector_id = int(self.np_random.integers(0, self.num_sectors))
+            
+            # Use the specified location (unless fixed_locations is enabled)
+            if self.fixed_locations:
+                # Use grid location based on current number of companies
+                idx = len(self.companies)
+                grid_size = int(np.sqrt(self.max_company)) + 1
+                x = (idx % grid_size) * (self.size / grid_size)
+                y = (idx // grid_size) * (self.size / grid_size)
+                location = (float(x), float(y))
+            else:
+                # Use the action-specified location
+                location = (x_coord, y_coord)
+            
+            # Validate we can create a new company
+            if self.num_firms < self.max_company:
+                new_company = Company(
+                    init_capital,
+                    sector_id,
+                    location,
+                    op_cost_rate=self.op_cost_rate,
+                    logistic_cost_rate=self.logistic_cost_rate,
+                    revenue_rate=self.revenue_rate,
+                    min_distance_epsilon=self.min_distance_epsilon,
+                    production_capacity_ratio=self.production_capacity_ratio,
+                    purchase_budget_ratio=self.purchase_budget_ratio,
+                )
+                self.companies.append(new_company)
+                self.num_firms += 1
+                action_result = "valid_create"
+                num_valid_actions += 1
+
+                # Rebuild supply chain network when new company is added
+                if self.enable_products:
+                    self._build_supply_chain_network()
+            else:
+                # Cannot create more companies (at capacity)
+                action_result = "invalid_capacity"
+                num_invalid_actions += 1
 
         # Simulate supply chain interactions (applies logistic costs based on distance)
         self._simulate_supply_chain()
@@ -646,13 +607,13 @@ class IndustryEnv(gym.Env):
             total_sold = 0.0
             total_purchased = 0.0
 
-        # Build info dict with all action results
+        # Build info dict with action result
         info = {
-            "action_results": action_results,
-            "num_actions": num_actions,
+            "action_result": action_result,
+            "action_type": "create" if is_create else "invest",
             "num_valid_actions": num_valid_actions,
             "num_invalid_actions": num_invalid_actions,
-            "investment_amount": total_investment_amount,
+            "investment_amount": investment_amount,
             "total_profit": total_profit,
             "total_logistic_cost": total_logistic_cost,
             "num_firms": self.num_firms,

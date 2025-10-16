@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script to demonstrate logistic cost functionality.
-Shows how distance between companies affects transportation costs using inverse square law.
+Shows how distance between companies affects transportation costs using linear relationship.
 """
 
 import os
@@ -32,7 +32,7 @@ class TestLogisticCost:
         distances = [1.0, 5.0, 10.0, 20.0, 50.0]
         trade_volume = 1000.0
         
-        print(f"Testing inverse square law: cost = k * volume / distance²")
+        print(f"Testing linear relationship: cost = k * volume * distance")
         print(f"Logistic Cost Rate (k): {company_a.logistic_cost_rate}")
         
         previous_cost = None
@@ -44,19 +44,19 @@ class TestLogisticCost:
             )
             cost = company_a.calculate_logistic_cost_to(company_b, trade_volume)
             
-            # Verify inverse square law
-            expected_cost = company_a.logistic_cost_rate * trade_volume / (dist ** 2)
+            # Verify linear relationship
+            expected_cost = company_a.logistic_cost_rate * trade_volume * dist
             assert abs(cost - expected_cost) < 0.01, \
                 f"Cost calculation error at distance {dist}: {cost} != {expected_cost}"
             
             if previous_cost is not None:
-                # Cost should decrease as distance increases
-                assert cost < previous_cost, \
-                    f"Cost should decrease with distance: {cost} >= {previous_cost}"
+                # Cost should increase as distance increases (linear relationship)
+                assert cost > previous_cost, \
+                    f"Cost should increase with distance: {cost} <= {previous_cost}"
             
             previous_cost = cost
         
-        print("✅ Logistic cost follows inverse square law")
+        print("✅ Logistic cost follows linear relationship")
     
     def test_environment_with_logistic_costs(self):
         """Test the environment with supply chain and logistic costs."""
@@ -132,6 +132,7 @@ class TestLogisticCost:
         trade_volume = 5000.0
         
         # Test different distances
+        previous_cost = None
         for distance in [5.0, 10.0, 20.0, 50.0]:
             mfg_co = Company(
                 capital=100000,
@@ -142,21 +143,26 @@ class TestLogisticCost:
             # Calculate cost
             log_cost = energy_co.calculate_logistic_cost_to(mfg_co, trade_volume)
             
-            # Verify cost decreases with distance
-            expected_cost = 100.0 * trade_volume / (distance ** 2)
+            # Verify linear relationship
+            expected_cost = 100.0 * trade_volume * distance
             assert abs(log_cost - expected_cost) < 0.01, \
                 f"Cost calculation error: {log_cost} != {expected_cost}"
             
-            # Calculate net revenue (cost decreases with distance in inverse square law)
-            # So actually closer companies have HIGHER costs, not lower
+            # Cost increases with distance (linear relationship)
+            if previous_cost is not None:
+                assert log_cost > previous_cost, \
+                    f"Cost should increase with distance: {log_cost} <= {previous_cost}"
+            previous_cost = log_cost
+            
+            # Calculate net revenue (cost increases with distance in linear relationship)
+            # So closer companies are more profitable
             net_revenue = energy_co.revenue_rate * trade_volume - log_cost
-            # Just verify the calculation is correct, don't assert about profitability
-            # since inverse square law means costs are high at short distances
+            # Net revenue should be positive for reasonable distances
         
         print("✅ Distance impact on profitability verified")
     
     def test_min_distance_epsilon(self):
-        """Test that min_distance_epsilon prevents division by zero."""
+        """Test handling of co-located companies (distance = 0)."""
         config = Config()
         config.environment.min_distance_epsilon = 0.1
         
@@ -175,15 +181,14 @@ class TestLogisticCost:
             location=(50.0, 50.0)  # Same location
         )
         
-        # This should not raise a division by zero error
+        # This should work fine with linear relationship (distance = 0 means cost = 0)
         cost = company_a.calculate_logistic_cost_to(company_b, 1000.0)
         
-        # Cost should be calculated using epsilon distance
-        expected_cost = 100.0 * 1000.0 / (0.1 ** 2)
-        assert abs(cost - expected_cost) < 0.01, \
-            f"Cost with epsilon distance incorrect: {cost} != {expected_cost}"
+        # With linear relationship, distance 0 means cost should be 0
+        assert cost == 0.0, \
+            f"Cost at distance 0 should be 0, got: {cost}"
         
-        print("✅ min_distance_epsilon prevents division by zero")
+        print("✅ Co-located companies have zero logistic cost")
 
 
 def main():
@@ -205,11 +210,11 @@ def main():
         print("✅ ALL LOGISTIC COST TESTS PASSED")
         print("="*70)
         print("\nLogistic cost system verified:")
-        print("  ✓ Inverse square law: cost = k * volume / distance²")
+        print("  ✓ Linear relationship: cost = k * volume * distance")
         print("  ✓ Configurable rate parameter")
         print("  ✓ Can be disabled via flag")
         print("  ✓ Distance affects profitability")
-        print("  ✓ Epsilon prevents division by zero")
+        print("  ✓ Co-located companies have zero cost")
         print()
         return 0
         

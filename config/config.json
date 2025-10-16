@@ -6,16 +6,16 @@
       "max_episode_steps": 1000
     },
     "capacity": {
-      "max_company": 1000,
-      "initial_firms": 10
+      "max_company": 300,
+      "initial_firms": 50
     },
     "actions": {
-      "max_actions_per_step": 10
+      "max_actions_per_step": 3
     },
     "company": {
       "op_cost_rate": 0.05,
       "initial_capital_min": 10000.0,
-      "initial_capital_max": 100000.0,
+      "initial_capital_max": 1000000.0,
       "investment_min": 0.0,
       "investment_max": 1000000.0,
       "new_company_capital_min": 1000.0,
@@ -29,7 +29,7 @@
       "min_distance_epsilon": 0.1
     },
     "logistics": {
-      "logistic_cost_rate": 100.0,
+      "logistic_cost_rate": 10.0,
       "disable_logistic_costs": false
     },
     "rewards": {
