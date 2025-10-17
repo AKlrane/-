@@ -25,7 +25,6 @@ class Company:
         revenue_rate: float = 1.0,
         min_distance_epsilon: float = 0.1,
         production_capacity_ratio: float = 0.1, # Max production = capital * ratio
-        purchase_budget_ratio: float = 0.2,
         fixed_income: float = -5.0,
         tier_prices: dict = None,
         tier_cogs: dict = None,
@@ -82,9 +81,6 @@ class Company:
         self.production_capacity_ratio = (
             production_capacity_ratio  # Max production = capital * ratio
         )
-        self.purchase_budget_ratio = (
-            purchase_budget_ratio  # Max purchase = capital * ratio
-        )
         # Finished product inventory (what this company sells)
         # Start with some initial inventory to bootstrap supply chain
         # initial_inventory = capital / unit_price / 10
@@ -116,9 +112,8 @@ class Company:
         else:
             self.product_unit_cost = self.unit_cogs  # Other sectors use unit_cogs
         
-        # Calculate initial inventory: capital / unit_price / 100 (small amount to bootstrap)
-        initial_inventory = self.capital / max(self.revenue_rate, 1.0) / 100.0
-        self.product_inventory = initial_inventory
+        # Initial inventory starts at 0 (no free bootstrap inventory)
+        self.product_inventory = 0.0
         # Input inventories for processing/assembly
         self.raw_inventory = 0.0  # For tier 1 processors (raw materials)
         self.parts_inventory = 0.0  # For OEM
@@ -189,14 +184,15 @@ class Company:
         capital_ratio = max(self.capital, 0.0) / max(max_capital, 1.0)
         management_cost = max(self.capital, 0.0) * 0.001 * (capital_ratio ** 0.5)
         
-        # Total cost includes operating cost, management cost, and accumulated logistic costs
-        total_cost = op_cost + management_cost + self.logistic_cost + self.cogs_cost
+        # Total cost includes operating cost, management cost, and COGS
+        # Note: Logistic costs are paid in cash immediately, not included here
+        total_cost = op_cost + management_cost + self.cogs_cost
         profit = self.revenue - total_cost + self.fixed_income
         self.capital += profit
 
         # Reset for next step
         self.revenue = 0.0
-        self.logistic_cost = 0.0
+        self.logistic_cost = 0.0  # Reset tracking variable (already paid in cash)
         self.cogs_cost = 0.0
 
         return profit
@@ -230,41 +226,11 @@ class Company:
         return self.capital * self.production_capacity_ratio
 
     def get_max_purchase_budget(self) -> float:
-        """Calculate maximum purchase budget based on capital."""
-        return self.capital * self.purchase_budget_ratio
-
-    def calculate_raw_needs(self) -> dict:
         """
-        Calculate raw material needs for Parts, Electronics, Battery makers.
-        Returns dict with keys: 'parts', 'electronics', 'battery' (units needed from Raw)
+        Calculate maximum purchase budget based on capital.
+        Uses production_capacity_ratio so purchase capacity matches production capacity.
         """
-        from .sector import sector_relations
-        sector_name = sector_relations[self.sector_id].name
-        capacity = self.get_max_production()
-        
-        needs = {'parts': 0, 'electronics': 0, 'battery': 0}
-        
-        if sector_name == "Parts":
-            # Can produce up to capacity units, need 3 raw each
-            needed = max(0, capacity - self.product_inventory)
-            needs['parts'] = int(needed * 3)
-        elif sector_name == "Electronics":
-            # Can produce up to capacity units, need 7 raw each
-            needed = max(0, capacity - self.product_inventory)
-            needs['electronics'] = int(needed * 7)
-        elif sector_name == "Battery/Motor":
-            # Can produce up to capacity units, need 20 raw each
-            needed = max(0, capacity - self.product_inventory)
-            needs['battery'] = int(needed * 20)
-        
-        return needs
-
-    def calculate_oem_needs(self) -> dict:
-        """
-        Calculate component needs for OEM (simplified - no longer used).
-        OEM now buys from any nearest suppliers regardless of type.
-        """
-        return {'total_budget': self.get_max_purchase_budget()}
+        return self.capital * self.production_capacity_ratio
 
     def produce_products(self) -> float:
         """
@@ -378,198 +344,6 @@ class Company:
 
         self.products_produced_this_step = produced
         return produced
-
-    def receive_order(self, amount: float) -> float:
-        """
-        Receive an order from a downstream customer.
-        Fulfill as much as possible from inventory.
-
-        Args:
-            amount: Requested order amount
-
-        Returns:
-            Actual amount fulfilled
-        """
-        # Limit fulfillment to available inventory
-        fulfilled_amount = min(amount, self.product_inventory)
-
-        if fulfilled_amount > 0:
-            self.product_inventory -= fulfilled_amount
-            self.products_sold_this_step += fulfilled_amount
-            # Add revenue (using revenue_rate)
-            self.add_revenue(fulfilled_amount)
-            # Add COGS for sold units (using unified add_cogs method)
-            self.add_cogs(fulfilled_amount)
-
-        return fulfilled_amount
-
-    def purchase_from_suppliers(
-        self, total_orders_from_customers: float = 0.0, disable_logistic_costs: bool = False
-    ) -> float:
-        """
-        Purchase products from upstream suppliers with smart prioritization.
-        
-        For Parts/Electronics/Battery: Calculate raw needs based on production capacity,
-                                      then distribute budget among them.
-        For OEM: First ensure target inventory levels, then use remaining budget.
-        
-        Args:
-            total_orders_from_customers: Total orders this company received (for planning)
-            disable_logistic_costs: If True, don't add logistic costs
-
-        Returns:
-            Total amount purchased
-        """
-        if self.tier == 0 or not self.suppliers:
-            return 0.0  # Tier 0 doesn't buy, produces instead
-
-        from .sector import sector_relations
-        sector_name = sector_relations[self.sector_id].name
-        max_budget = self.get_max_purchase_budget()
-        
-        if max_budget <= 0:
-            return 0.0
-
-        # Choose nearest K suppliers (K=5)
-        K = 5
-        nearest_suppliers = sorted(self.suppliers, key=lambda s: self.distance_to(s))[:K]
-        
-        total_purchased = 0.0
-        
-        # CASE 1: OEM - NEW DECOUPLED LOGIC: buy from nearest K suppliers regardless of type
-        if sector_name == "OEM":
-            # Simply distribute budget evenly among nearest suppliers
-            # Don't care if they sell Parts, Electronics, or Battery - buy whatever they have
-            per_supplier_budget = max_budget / len(nearest_suppliers)
-            
-            for supplier in nearest_suppliers:
-                sup_sector = sector_relations[supplier.sector_id].name
-                # Only buy from Parts, Electronics, or Battery/Motor suppliers
-                if sup_sector in ("Parts", "Electronics", "Battery/Motor"):
-                    purchased = self._purchase_from_single_supplier(
-                        supplier, per_supplier_budget, disable_logistic_costs
-                    )
-                    total_purchased += purchased
-        
-        # CASE 2: Parts/Electronics/Battery - calculate raw needs and buy proportionally
-        elif sector_name in ("Parts", "Electronics", "Battery/Motor"):
-            needs = self.calculate_raw_needs()
-            
-            # Get the specific raw need for this sector
-            if sector_name == "Parts":
-                raw_needed = needs['parts']
-            elif sector_name == "Electronics":
-                raw_needed = needs['electronics']
-            else:  # Battery/Motor
-                raw_needed = needs['battery']
-            
-            if raw_needed > 0 and max_budget > 0:
-                # Get actual Raw price from tier_prices
-                raw_price = self.tier_prices.get("Raw", 1.0)
-                raw_cost = raw_needed * raw_price
-                allocated_budget = min(raw_cost, max_budget)
-                per_supplier_budget = allocated_budget / len(nearest_suppliers)
-                
-                for supplier in nearest_suppliers:
-                    sup_sector = sector_relations[supplier.sector_id].name
-                    if sup_sector == "Raw":
-                        purchased = self._purchase_from_single_supplier(
-                            supplier, per_supplier_budget, disable_logistic_costs
-                        )
-                        total_purchased += purchased
-        
-        # CASE 3: Service - buy OEM products
-        elif sector_name == "Service":
-            per_supplier_budget = max_budget / len(nearest_suppliers)
-            for supplier in nearest_suppliers:
-                sup_sector = sector_relations[supplier.sector_id].name
-                if sup_sector == "OEM":
-                    purchased = self._purchase_from_single_supplier(
-                        supplier, per_supplier_budget, disable_logistic_costs
-                    )
-                    total_purchased += purchased
-        
-        self.products_purchased_this_step = total_purchased
-        return total_purchased
-
-    def _purchase_from_single_supplier(
-        self, supplier: "Company", budget: float, disable_logistic_costs: bool = False
-    ) -> float:
-        """
-        Helper method to purchase from a single supplier.
-        Returns amount purchased.
-        """
-        if budget <= 0 or supplier.product_inventory <= 0:
-            return 0.0
-        
-        from .sector import sector_relations
-        
-        unit_price = supplier.revenue_rate
-        requested_units = budget / max(unit_price, 1e-8)
-        
-        # Supplier fulfills order from their inventory
-        fulfilled_units = supplier.receive_order(requested_units)
-        
-        if fulfilled_units <= 0:
-            return 0.0
-        
-        # Calculate cost
-        cost = fulfilled_units * unit_price
-        
-        # Check if we have capital to pay
-        if self.capital < cost:
-            fulfilled_units = self.capital / max(unit_price, 1e-8)
-            cost = fulfilled_units * unit_price
-        
-        self.capital -= cost
-        
-        # Track input cost per unit for future COGS calculation
-        my_sector = sector_relations[self.sector_id].name
-        sup_sector = sector_relations[supplier.sector_id].name
-        unit_cost = cost / max(fulfilled_units, 1e-8)
-        
-        # Store cost tracking by input type
-        if sup_sector == "Raw":
-            if 'raw' not in self.input_cost_per_unit:
-                self.input_cost_per_unit['raw'] = unit_cost
-            else:
-                # Average the cost if buying from multiple suppliers
-                self.input_cost_per_unit['raw'] = (self.input_cost_per_unit['raw'] + unit_cost) / 2
-        elif sup_sector == "Parts":
-            self.input_cost_per_unit['parts'] = unit_cost
-        elif sup_sector == "Electronics":
-            self.input_cost_per_unit['elec'] = unit_cost
-        elif sup_sector == "Battery/Motor":
-            self.input_cost_per_unit['batt'] = unit_cost
-        elif sup_sector == "OEM":
-            self.input_cost_per_unit['oem'] = unit_cost
-        
-        # Add to appropriate input inventory
-        my_sector = sector_relations[self.sector_id].name
-        sup_sector = sector_relations[supplier.sector_id].name
-        
-        if my_sector in ("Parts", "Electronics", "Battery/Motor") and sup_sector == "Raw":
-            self.raw_inventory += fulfilled_units
-        elif my_sector == "OEM":
-            if sup_sector == "Parts":
-                self.parts_inventory += fulfilled_units
-            elif sup_sector == "Electronics":
-                self.electronics_inventory += fulfilled_units
-            elif sup_sector == "Battery/Motor":
-                self.battery_inventory += fulfilled_units
-            else:
-                self.product_inventory += fulfilled_units
-        elif my_sector == "Service" and sup_sector == "OEM":
-            self.oem_inventory += fulfilled_units
-        else:
-            self.product_inventory += fulfilled_units
-        
-        # Add logistic cost if enabled
-        if not disable_logistic_costs and hasattr(self, "logistic_cost_rate"):
-            logistic_cost = self.calculate_logistic_cost_to(supplier, fulfilled_units)
-            self.add_logistic_cost(logistic_cost)
-        
-        return fulfilled_units
 
     def reset_step_counters(self):
         """Reset per-step tracking counters."""

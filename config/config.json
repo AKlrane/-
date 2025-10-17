@@ -1,13 +1,13 @@
 {
   "environment": {
     "spatial": {
-      "size": 100.0,
+      "size": 40.0,
       "num_sectors": 7,
-      "max_episode_steps": 1000
+      "max_episode_steps": 65536
     },
     "capacity": {
-      "max_company": 500,
-      "initial_firms": 30
+      "max_company": 1500,
+      "initial_firms": 50
     },
     "actions": {
       "max_actions_per_step": 3
@@ -20,16 +20,18 @@
       "investment_max": 10000000.0,
       "new_company_capital_min": 1000.0,
       "new_company_capital_max": 1000000.0,
-      "death_threshold": 0.0
+      "death_threshold": 1000.0,
+      "fixed_cost_per_step": -5.0
     },
     "supply_chain": {
       "enable_supply_chain": true,
       "trade_volume_fraction": 0.01,
       "revenue_rate": 1.0,
-      "min_distance_epsilon": 0.1
+      "min_distance_epsilon": 0.1,
+      "nearest_suppliers_count": 2
     },
     "logistics": {
-      "logistic_cost_rate": 0.03,
+      "logistic_cost_rate": 0.05,
       "disable_logistic_costs": false
     },
     "management": {
@@ -38,15 +40,15 @@
     "pricing": {
       "tier_prices": {
         "Raw": 1.0,
-        "Parts": 6.0,
-        "Electronics": 15.0,
-        "Battery/Motor": 40.0,
-        "OEM": 200.0,
-        "Service": 500.0,
-        "Other": 10.1
+        "Parts": 4.5,
+        "Electronics": 10.5,
+        "Battery/Motor": 30,
+        "OEM": 180.0,
+        "Service": 550.0,
+        "Other": 10
       },
       "tier_cogs": {
-        "Raw": 0.9,
+        "Raw": 0.90,
         "Other": 10.0
       }
     },
@@ -74,8 +76,25 @@
     },
     "products": {
       "enable_products": true,
-      "production_capacity_ratio": 0.1,
-      "purchase_budget_ratio": 0.1
+      "tier_production_ratios": {
+        "Raw": 0.01,
+        "Parts": 0.004,
+        "Electronics": 0.004,
+        "Battery/Motor": 0.004,
+        "OEM": 0.012,
+        "Service": 0.012,
+        "Other": 0.01
+      },
+
+      "max_held_capital_rate": {
+        "Raw": 0.6,
+        "Parts": 0.24,
+        "Electronics": 0.24,
+        "Battery/Motor": 0.24,
+        "OEM": 0.5,
+        "Service": 0.6,
+        "Other": 0.06
+      }
     }
   },
   "training": {

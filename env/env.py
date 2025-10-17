@@ -52,12 +52,14 @@ class IndustryEnv(gym.Env):
             self.new_company_capital_min = env_config.new_company_capital_min
             self.new_company_capital_max = env_config.new_company_capital_max
             self.death_threshold = env_config.death_threshold
+            self.fixed_cost_per_step = getattr(env_config, "fixed_cost_per_step", -5.0)
 
             # Supply chain
             self.enable_supply_chain = env_config.enable_supply_chain
             self.trade_volume_fraction = env_config.trade_volume_fraction
             self.revenue_rate = env_config.revenue_rate
             self.min_distance_epsilon = env_config.min_distance_epsilon
+            self.nearest_suppliers_count = getattr(env_config, "nearest_suppliers_count", 5)
 
             # Logistics
             self.logistic_cost_rate = env_config.logistic_cost_rate
@@ -95,11 +97,27 @@ class IndustryEnv(gym.Env):
 
             # Product system parameters
             self.enable_products = getattr(env_config, "enable_products", True)
-            self.production_capacity_ratio = getattr(
-                env_config, "production_capacity_ratio", 0.1
+            self.tier_production_ratios = getattr(
+                env_config, "tier_production_ratios", {
+                    "Raw": 0.5,
+                    "Parts": 0.3,
+                    "Electronics": 0.3,
+                    "Battery/Motor": 0.3,
+                    "OEM": 0.2,
+                    "Service": 0.1,
+                    "Other": 0.1
+                }
             )
-            self.purchase_budget_ratio = getattr(
-                env_config, "purchase_budget_ratio", 0.2
+            self.max_held_capital_rate = getattr(
+                env_config, "max_held_capital_rate", {
+                    "Raw": 0.3,
+                    "Parts": 0.4,
+                    "Electronics": 0.4,
+                    "Battery/Motor": 0.4,
+                    "OEM": 0.3,
+                    "Service": 0.2,
+                    "Other": 0.3
+                }
             )
             
             # Visualization parameters
@@ -129,10 +147,12 @@ class IndustryEnv(gym.Env):
             self.new_company_capital_min = 1000.0
             self.new_company_capital_max = 1000000.0
             self.death_threshold = 0.0
+            self.fixed_cost_per_step = -5.0
             self.enable_supply_chain = True
             self.trade_volume_fraction = 0.01
             self.revenue_rate = 1.0
             self.min_distance_epsilon = 0.1
+            self.nearest_suppliers_count = 5
             self.logistic_cost_rate = 1.0
             self.disable_logistic_costs = False
             self.max_capital = 100000000.0
@@ -160,8 +180,6 @@ class IndustryEnv(gym.Env):
 
             # Product system defaults
             self.enable_products = True
-            self.production_capacity_ratio = 0.1
-            self.purchase_budget_ratio = 0.2
             
             # Visualization defaults
             self.visualize_every_n_steps = 0
@@ -284,7 +302,7 @@ class IndustryEnv(gym.Env):
         max_tier = max(c.tier for c in self.companies) if self.companies else 0
         from .sector import sector_relations
         from collections import defaultdict
-        K = 5
+        K = self.nearest_suppliers_count
         
         # Collect all orders for each supplier: {supplier: [(customer, distance, units_requested)]}
         supplier_orders = defaultdict(list)
@@ -292,6 +310,19 @@ class IndustryEnv(gym.Env):
         for customer in self.companies:
             if customer.tier == 0 or not customer.suppliers:
                 continue  # Tier 0 doesn't buy
+            
+            # INVENTORY LIMIT CHECK: Skip purchasing if inventory value > threshold% of capital
+            # Calculate current product inventory value (not raw materials, but finished products)
+            inventory_value = customer.product_inventory * customer.revenue_rate
+            inventory_ratio = inventory_value / max(customer.capital, 1e-8)
+            
+            # Get sector-specific max_held_capital_rate threshold
+            cust_sector_name = sector_relations[customer.sector_id].name
+            max_inventory_ratio = self.max_held_capital_rate.get(cust_sector_name, 0.3)
+            
+            if inventory_ratio > max_inventory_ratio:
+                # Skip purchasing this round if inventory is too high
+                continue
             
             # Calculate total purchase budget for this customer
             purchase_budget = customer.get_max_purchase_budget()
@@ -351,27 +382,26 @@ class IndustryEnv(gym.Env):
                 
                 unit_price = supplier.revenue_rate
                 
-                # Check customer's affordability
-                max_affordable_units = customer.capital / max(unit_price, 1e-8)
-                
-                # Determine units to sell (standard logic - no special handling for last order)
-                units_to_sell = min(units_requested, supplier.product_inventory, max_affordable_units)
+                # Determine units to sell based on inventory only
+                # Note: units_requested already respects purchase_budget from Phase 2a
+                units_to_sell = min(units_requested, supplier.product_inventory)
                 
                 if units_to_sell <= 0:
                     continue
                 
-                # Perform transaction
+                # Perform transaction (revenue/cost recognition, not cash payment)
                 cost = units_to_sell * unit_price
-                customer.capital -= cost
+                # Note: customer does NOT pay cash now - cost will be recognized through COGS when they sell
+                # But we limit their purchasing based on capital (credit limit)
                 supplier.add_revenue(units_to_sell)
                 supplier.add_cogs(units_to_sell)
                 supplier.product_inventory -= units_to_sell
                 supplier.products_sold_this_step += units_to_sell
                 
-                # Add logistic cost to customer
+                # Add logistic cost to customer (paid in cash immediately)
                 if not self.disable_logistic_costs and hasattr(supplier, "logistic_cost_rate"):
                     logistic_cost = supplier.logistic_cost_rate * unit_price * units_to_sell * max(dist, supplier.min_distance_epsilon)
-                    customer.add_logistic_cost(logistic_cost)
+                    customer.capital -= logistic_cost  # Pay logistics cost in cash
                 
                 # Track input cost per unit for customer's COGS calculation
                 sup_name = sector_relations[supplier.sector_id].name
@@ -410,21 +440,22 @@ class IndustryEnv(gym.Env):
                     customer.oem_inventory += units_to_sell
                 else:
                     customer.product_inventory += units_to_sell
+                
+                # Track purchase quantity for customer
+                customer.products_purchased_this_step += units_to_sell
 
         # Step 3: After materials flow, run production for all companies
         for company in self.companies:
             company.produce_products()
 
-        # Step 4: Service companies (terminal tier) automatically sell limited inventory
+        # Step 4: Service companies (terminal tier) automatically sell all inventory
         # This represents direct market sales/services that don't require customers
-        # Limited to prevent capital explosion - only sell up to 20% of inventory per step
         # NOTE: This must happen BEFORE company.step() to properly account for revenue
         for company in self.companies:
             sector_name = sector_relations[company.sector_id].name
             if sector_name == "Service" and company.product_inventory > 0:
-                # Service sells up to 20% of inventory (limited market demand)
-                max_sellable = company.product_inventory * 0.2
-                units_sold = max_sellable
+                # Service sells all inventory (direct to market)
+                units_sold = company.product_inventory
                 revenue = units_sold * company.revenue_rate
                 company.revenue += revenue  # Add revenue directly (will be processed in step())
                 company.add_cogs(units_sold)  # Apply COGS for the sold units
@@ -603,6 +634,12 @@ class IndustryEnv(gym.Env):
                         float(self.np_random.uniform(0, self.size)),
                     )
 
+                # Get sector-specific production capacity ratio
+                sector_name = sector_relations[sector_id].name
+                sector_production_ratio = self.tier_production_ratios.get(
+                    sector_name, 0.1  # Default fallback if sector not in tier_production_ratios
+                )
+                
                 self.companies.append(
                     Company(
                         capital,
@@ -612,8 +649,8 @@ class IndustryEnv(gym.Env):
                         logistic_cost_rate=self.logistic_cost_rate,
                         revenue_rate=self.revenue_rate,
                         min_distance_epsilon=self.min_distance_epsilon,
-                        production_capacity_ratio=self.production_capacity_ratio,
-                        purchase_budget_ratio=self.purchase_budget_ratio,
+                        production_capacity_ratio=sector_production_ratio,
+                        fixed_income=self.fixed_cost_per_step,
                         tier_prices=self.tier_prices,
                         tier_cogs=self.tier_cogs,
                     )
@@ -715,6 +752,12 @@ class IndustryEnv(gym.Env):
             
             # Validate we can create a new company
             if self.num_firms < self.max_company:
+                # Get sector-specific production capacity ratio
+                sector_name = sector_relations[sector_id].name
+                sector_production_ratio = self.tier_production_ratios.get(
+                    sector_name, 0.1  # Default fallback if sector not in tier_production_ratios
+                )
+                
                 new_company = Company(
                     init_capital,
                     sector_id,
@@ -723,8 +766,8 @@ class IndustryEnv(gym.Env):
                     logistic_cost_rate=self.logistic_cost_rate,
                     revenue_rate=self.revenue_rate,
                     min_distance_epsilon=self.min_distance_epsilon,
-                    production_capacity_ratio=self.production_capacity_ratio,
-                    purchase_budget_ratio=self.purchase_budget_ratio,
+                    production_capacity_ratio=sector_production_ratio,
+                    fixed_income=self.fixed_cost_per_step,
                     tier_prices=self.tier_prices,
                     tier_cogs=self.tier_cogs,
                 )

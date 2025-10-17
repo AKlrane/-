@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\17262\Desktop\as\-\test_tier_production.py", line 5, in <module>
+    from env.env import IndustryEnv
+  File "C:\Users\17262\Desktop\as\-\env\__init__.py", line 11, in <module>
+    from .company import Company
+  File "C:\Users\17262\Desktop\as\-\env\company.py", line 6, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'

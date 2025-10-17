@@ -36,12 +36,14 @@ class EnvironmentConfig:
     new_company_capital_min: float = 1000.0
     new_company_capital_max: float = 1000000.0
     death_threshold: float = 0.0
+    fixed_cost_per_step: float = -5.0
     
     # Supply chain parameters
     trade_volume_fraction: float = 0.01
     revenue_rate: float = 1.0
     enable_supply_chain: bool = True
     min_distance_epsilon: float = 0.1
+    nearest_suppliers_count: int = 5
     
     # Logistic cost parameters
     logistic_cost_rate: float = 1.0
@@ -89,8 +91,24 @@ class EnvironmentConfig:
     
     # Product system parameters
     enable_products: bool = True
-    production_capacity_ratio: float = 0.1  # Max production = capital * ratio
-    purchase_budget_ratio: float = 0.2  # Max purchase = capital * ratio
+    tier_production_ratios: dict = field(default_factory=lambda: {
+        "Raw": 0.5,
+        "Parts": 0.3,
+        "Electronics": 0.3,
+        "Battery/Motor": 0.3,
+        "OEM": 0.2,
+        "Service": 0.1,
+        "Other": 0.1
+    })
+    max_held_capital_rate: dict = field(default_factory=lambda: {
+        "Raw": 0.3,
+        "Parts": 0.4,
+        "Electronics": 0.4,
+        "Battery/Motor": 0.4,
+        "OEM": 0.3,
+        "Service": 0.2,
+        "Other": 0.3
+    })
 
 
 @dataclass

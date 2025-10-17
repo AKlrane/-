@@ -5,19 +5,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from config import Config
+from config.config import load_config
 from env import IndustryEnv
 from env.sector import sector_relations
 from tqdm import tqdm
 
 
-def run_and_visualize(steps: int = 200, initial_firms: int = 50, save_every: int = 10, out_dir: str = "visualizations/periodic"):
-    config = Config()
-    # Ensure logistic cost rate matches the new default (0.03)
-    config.environment.logistic_cost_rate = 0.03
-    config.environment.size = 20.0  # Set map size to 40x40
+def run_and_visualize(steps: int = 400, initial_firms: int = 150, save_every: int = 20, out_dir: str = "visualizations/periodic"):
+    config = load_config("config/config.json")
+    # Use config.json settings (no hardcoded overrides)
 
     env = IndustryEnv(config.environment)
-    obs, _ = env.reset(options={"initial_firms": initial_firms})
+    obs, _ = env.reset(seed=42, options={"initial_firms": initial_firms})
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     
