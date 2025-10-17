@@ -63,6 +63,24 @@ class IndustryEnv(gym.Env):
             self.logistic_cost_rate = env_config.logistic_cost_rate
             self.disable_logistic_costs = env_config.disable_logistic_costs
 
+            # Management cost
+            self.max_capital = getattr(env_config, "max_capital", 100000000.0)
+            
+            # Pricing
+            self.tier_prices = getattr(env_config, "tier_prices", {
+                "Raw": 10.0,
+                "Parts": 36.0,
+                "Electronics": 85.0,
+                "Battery/Motor": 250.0,
+                "OEM": 3000.0,
+                "Service": 7000.0,
+                "Other": 10.5
+            })
+            self.tier_cogs = getattr(env_config, "tier_cogs", {
+                "Raw": 8.5,
+                "Other": 10.0
+            })
+
             # Rewards
             self.investment_multiplier = env_config.investment_multiplier
             self.creation_reward = env_config.creation_reward
@@ -117,6 +135,20 @@ class IndustryEnv(gym.Env):
             self.min_distance_epsilon = 0.1
             self.logistic_cost_rate = 1.0
             self.disable_logistic_costs = False
+            self.max_capital = 100000000.0
+            self.tier_prices = {
+                "Raw": 10.0,
+                "Parts": 36.0,
+                "Electronics": 85.0,
+                "Battery/Motor": 250.0,
+                "OEM": 3000.0,
+                "Service": 7000.0,
+                "Other": 10.5
+            }
+            self.tier_cogs = {
+                "Raw": 8.5,
+                "Other": 10.0
+            }
             self.investment_multiplier = 0.01
             self.creation_reward = 50.0
             self.invalid_action_penalty = -20.0
@@ -190,22 +222,28 @@ class IndustryEnv(gym.Env):
     def _build_supply_chain_network(self):
         """
         Build supply chain relationships between companies based on their tiers.
-        Lower tier companies supply to higher tier companies.
+        Companies can only buy from the immediately preceding tier.
+        
+        Supply chain flow:
+        - Tier 0 (Raw) → Tier 1 (Parts/Electronics/Battery)
+        - Tier 1 (Parts/Electronics/Battery) → Tier 2 (OEM)
+        - Tier 2 (OEM) → Tier 3 (Service)
         """
         # Clear existing relationships
         for company in self.companies:
             company.suppliers = []
             company.customers = []
 
-        # Build relationships based on tiers
+        # Build relationships based on tier adjacency
         for company in self.companies:
-            # Find suppliers (companies in lower tiers)
+            # Find suppliers from the immediately preceding tier only
             for other in self.companies:
                 if other == company:
                     continue
 
-                # If other company is in a lower tier, it can be a supplier
-                if other.tier < company.tier:
+                # Check for valid tier-based supply relationships
+                # Allow purchasing only from immediately preceding tier
+                if company.tier > 0 and other.tier == company.tier - 1:
                     company.suppliers.append(other)
                     other.customers.append(company)
 
@@ -241,26 +279,157 @@ class IndustryEnv(gym.Env):
         for company in tier_0_companies:
             company.produce_products()
 
-        # Step 2: Process each tier from 1 to max, purchasing and selling
+        # Step 2: Demand collection and supply allocation (buyer-driven model)
+        # Phase 2a: All buyers calculate needs and place orders with nearest K suppliers
         max_tier = max(c.tier for c in self.companies) if self.companies else 0
+        from .sector import sector_relations
+        from collections import defaultdict
+        K = 5
+        
+        # Collect all orders for each supplier: {supplier: [(customer, distance, units_requested)]}
+        supplier_orders = defaultdict(list)
+        
+        for customer in self.companies:
+            if customer.tier == 0 or not customer.suppliers:
+                continue  # Tier 0 doesn't buy
+            
+            # Calculate total purchase budget for this customer
+            purchase_budget = customer.get_max_purchase_budget()
+            if purchase_budget <= 0:
+                continue
+            
+            cust_name = sector_relations[customer.sector_id].name
+            
+            # NEW DECOUPLED LOGIC: OEM now buys from nearest K suppliers regardless of type
+            if cust_name == "OEM":
+                # Filter for relevant suppliers (Parts, Electronics, Battery/Motor)
+                relevant_suppliers = [s for s in customer.suppliers 
+                                     if sector_relations[s.sector_id].name in ("Parts", "Electronics", "Battery/Motor")]
+                
+                if relevant_suppliers:
+                    # Find nearest K suppliers from all component types
+                    nearest_suppliers = sorted(relevant_suppliers, key=lambda s: customer.distance_to(s))[:K]
+                    budget_per_supplier = purchase_budget / len(nearest_suppliers)
+                    
+                    for supplier in nearest_suppliers:
+                        unit_price = supplier.revenue_rate
+                        units_requested = budget_per_supplier / max(unit_price, 1e-8)
+                        if units_requested > 0:
+                            dist = customer.distance_to(supplier)
+                            supplier_orders[supplier].append((customer, dist, units_requested))
+            else:
+                # For non-OEM customers: simple nearest K supplier distribution
+                nearest_suppliers = sorted(customer.suppliers, key=lambda s: customer.distance_to(s))[:K]
+                if not nearest_suppliers:
+                    continue
+                
+                budget_per_supplier = purchase_budget / len(nearest_suppliers)
+                
+                for supplier in nearest_suppliers:
+                    unit_price = supplier.revenue_rate
+                    units_requested = budget_per_supplier / max(unit_price, 1e-8)
+                    if units_requested > 0:
+                        dist = customer.distance_to(supplier)
+                        supplier_orders[supplier].append((customer, dist, units_requested))
+        
+        # Phase 2b: Each supplier fulfills orders from nearest to farthest
+        for supplier in self.companies:
+            if supplier.product_inventory <= 0:
+                continue
+            
+            orders = supplier_orders[supplier]
+            if not orders:
+                continue
+            
+            # Sort orders by distance (nearest first)
+            orders.sort(key=lambda x: x[1])
+            
+            # Fulfill orders sequentially
+            for idx, (customer, dist, units_requested) in enumerate(orders):
+                if supplier.product_inventory <= 0:
+                    break
+                
+                unit_price = supplier.revenue_rate
+                
+                # Check customer's affordability
+                max_affordable_units = customer.capital / max(unit_price, 1e-8)
+                
+                # Determine units to sell (standard logic - no special handling for last order)
+                units_to_sell = min(units_requested, supplier.product_inventory, max_affordable_units)
+                
+                if units_to_sell <= 0:
+                    continue
+                
+                # Perform transaction
+                cost = units_to_sell * unit_price
+                customer.capital -= cost
+                supplier.add_revenue(units_to_sell)
+                supplier.add_cogs(units_to_sell)
+                supplier.product_inventory -= units_to_sell
+                supplier.products_sold_this_step += units_to_sell
+                
+                # Add logistic cost to customer
+                if not self.disable_logistic_costs and hasattr(supplier, "logistic_cost_rate"):
+                    logistic_cost = supplier.logistic_cost_rate * unit_price * units_to_sell * max(dist, supplier.min_distance_epsilon)
+                    customer.add_logistic_cost(logistic_cost)
+                
+                # Track input cost per unit for customer's COGS calculation
+                sup_name = sector_relations[supplier.sector_id].name
+                cust_name = sector_relations[customer.sector_id].name
+                unit_cost = cost / max(units_to_sell, 1e-8)
+                
+                # Store cost tracking by input type
+                if sup_name == "Raw":
+                    if 'raw' not in customer.input_cost_per_unit:
+                        customer.input_cost_per_unit['raw'] = unit_cost
+                    else:
+                        # Average the cost if buying from multiple suppliers
+                        customer.input_cost_per_unit['raw'] = (customer.input_cost_per_unit['raw'] + unit_cost) / 2
+                elif sup_name == "Parts":
+                    customer.input_cost_per_unit['parts'] = unit_cost
+                elif sup_name == "Electronics":
+                    customer.input_cost_per_unit['elec'] = unit_cost
+                elif sup_name == "Battery/Motor":
+                    customer.input_cost_per_unit['batt'] = unit_cost
+                elif sup_name == "OEM":
+                    customer.input_cost_per_unit['oem'] = unit_cost
+                
+                # Receive goods into appropriate inventory
+                if cust_name in ("Parts", "Electronics", "Battery/Motor") and sup_name == "Raw":
+                    customer.raw_inventory += units_to_sell
+                elif cust_name == "OEM":
+                    if sup_name == "Parts":
+                        customer.parts_inventory += units_to_sell
+                    elif sup_name == "Electronics":
+                        customer.electronics_inventory += units_to_sell
+                    elif sup_name == "Battery/Motor":
+                        customer.battery_inventory += units_to_sell
+                    else:
+                        customer.product_inventory += units_to_sell
+                elif cust_name == "Service" and sup_name == "OEM":
+                    customer.oem_inventory += units_to_sell
+                else:
+                    customer.product_inventory += units_to_sell
 
-        for current_tier in range(1, max_tier + 1):
-            tier_companies = [c for c in self.companies if c.tier == current_tier]
+        # Step 3: After materials flow, run production for all companies
+        for company in self.companies:
+            company.produce_products()
 
-            for company in tier_companies:
-                # Calculate total orders from downstream customers
-                # Each customer wants to order based on their purchase budget
-                total_customer_orders = 0.0
-                for customer in company.customers:
-                    order_amount = (
-                        customer.get_max_purchase_budget() / len(customer.suppliers)
-                        if customer.suppliers
-                        else 0.0
-                    )
-                    total_customer_orders += order_amount
-
-                # Purchase from upstream suppliers to fulfill orders + maintain inventory
-                company.purchase_from_suppliers(total_customer_orders, self.disable_logistic_costs)
+        # Step 4: Service companies (terminal tier) automatically sell limited inventory
+        # This represents direct market sales/services that don't require customers
+        # Limited to prevent capital explosion - only sell up to 20% of inventory per step
+        # NOTE: This must happen BEFORE company.step() to properly account for revenue
+        for company in self.companies:
+            sector_name = sector_relations[company.sector_id].name
+            if sector_name == "Service" and company.product_inventory > 0:
+                # Service sells up to 20% of inventory (limited market demand)
+                max_sellable = company.product_inventory * 0.2
+                units_sold = max_sellable
+                revenue = units_sold * company.revenue_rate
+                company.revenue += revenue  # Add revenue directly (will be processed in step())
+                company.add_cogs(units_sold)  # Apply COGS for the sold units
+                company.product_inventory -= units_sold
+                company.products_sold_this_step += units_sold
 
     def _simulate_generic_supply_chain(self):
         """
@@ -445,6 +614,8 @@ class IndustryEnv(gym.Env):
                         min_distance_epsilon=self.min_distance_epsilon,
                         production_capacity_ratio=self.production_capacity_ratio,
                         purchase_budget_ratio=self.purchase_budget_ratio,
+                        tier_prices=self.tier_prices,
+                        tier_cogs=self.tier_cogs,
                     )
                 )
                 self.num_firms += 1
@@ -554,6 +725,8 @@ class IndustryEnv(gym.Env):
                     min_distance_epsilon=self.min_distance_epsilon,
                     production_capacity_ratio=self.production_capacity_ratio,
                     purchase_budget_ratio=self.purchase_budget_ratio,
+                    tier_prices=self.tier_prices,
+                    tier_cogs=self.tier_cogs,
                 )
                 self.companies.append(new_company)
                 self.num_firms += 1
@@ -576,7 +749,7 @@ class IndustryEnv(gym.Env):
         total_logistic_cost = 0.0
         for company in self.companies:
             total_logistic_cost += company.logistic_cost
-            profit = company.step()
+            profit = company.step(max_capital=self.max_capital)
             total_profit += profit
 
         # Remove companies that fall below death threshold

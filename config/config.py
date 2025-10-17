@@ -46,6 +46,24 @@ class EnvironmentConfig:
     # Logistic cost parameters
     logistic_cost_rate: float = 1.0
     
+    # Management cost parameters
+    max_capital: float = 100000000.0  # 1 billion - threshold for logarithmic cost
+    
+    # Pricing parameters
+    tier_prices: dict = field(default_factory=lambda: {
+        "Raw": 10.0,
+        "Parts": 50.0,
+        "Electronics": 120.0,
+        "Battery/Motor": 350.0,
+        "OEM": 4500.0,
+        "Service": 5500.0,
+        "Other": 10.5
+    })
+    tier_cogs: dict = field(default_factory=lambda: {
+        "Raw": 9.0,
+        "Other": 10.0
+    })
+    
     # Reward parameters
     investment_multiplier: float = 0.01
     creation_reward: float = 50.0
