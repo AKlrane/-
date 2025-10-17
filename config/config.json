@@ -31,8 +31,16 @@
       "nearest_suppliers_count": 2
     },
     "logistics": {
-      "logistic_cost_rate": 0.05,
-      "disable_logistic_costs": false
+      "disable_logistic_costs": false,
+      "tier_logistic_cost_rate": {
+        "Raw": 0.05,
+        "Parts": 0.15,
+        "Electronics": 0.15,
+        "Battery/Motor": 0.15,
+        "OEM": 0.05,
+        "Service": 0.05,
+        "Other": 0.05
+      }
     },
     "management": {
       "max_capital": 100000000.0

@@ -62,8 +62,18 @@ class IndustryEnv(gym.Env):
             self.nearest_suppliers_count = getattr(env_config, "nearest_suppliers_count", 5)
 
             # Logistics
-            self.logistic_cost_rate = env_config.logistic_cost_rate
             self.disable_logistic_costs = env_config.disable_logistic_costs
+            self.tier_logistic_cost_rate = getattr(
+                env_config, "tier_logistic_cost_rate", {
+                    "Raw": 0.05,
+                    "Parts": 0.05,
+                    "Electronics": 0.05,
+                    "Battery/Motor": 0.05,
+                    "OEM": 0.05,
+                    "Service": 0.05,
+                    "Other": 0.05
+                }
+            )
 
             # Management cost
             self.max_capital = getattr(env_config, "max_capital", 100000000.0)
@@ -153,8 +163,16 @@ class IndustryEnv(gym.Env):
             self.revenue_rate = 1.0
             self.min_distance_epsilon = 0.1
             self.nearest_suppliers_count = 5
-            self.logistic_cost_rate = 1.0
             self.disable_logistic_costs = False
+            self.tier_logistic_cost_rate = {
+                "Raw": 0.05,
+                "Parts": 0.05,
+                "Electronics": 0.05,
+                "Battery/Motor": 0.05,
+                "OEM": 0.05,
+                "Service": 0.05,
+                "Other": 0.05
+            }
             self.max_capital = 100000000.0
             self.tier_prices = {
                 "Raw": 10.0,
@@ -639,6 +657,9 @@ class IndustryEnv(gym.Env):
                 sector_production_ratio = self.tier_production_ratios.get(
                     sector_name, 0.1  # Default fallback if sector not in tier_production_ratios
                 )
+                sector_logistic_rate = self.tier_logistic_cost_rate.get(
+                    sector_name, 0.05  # Default fallback
+                )
                 
                 self.companies.append(
                     Company(
@@ -646,7 +667,7 @@ class IndustryEnv(gym.Env):
                         sector_id,
                         location,
                         op_cost_rate=self.op_cost_rate,
-                        logistic_cost_rate=self.logistic_cost_rate,
+                        logistic_cost_rate=sector_logistic_rate,
                         revenue_rate=self.revenue_rate,
                         min_distance_epsilon=self.min_distance_epsilon,
                         production_capacity_ratio=sector_production_ratio,
@@ -752,10 +773,13 @@ class IndustryEnv(gym.Env):
             
             # Validate we can create a new company
             if self.num_firms < self.max_company:
-                # Get sector-specific production capacity ratio
+                # Get sector-specific production capacity ratio and logistic cost rate
                 sector_name = sector_relations[sector_id].name
                 sector_production_ratio = self.tier_production_ratios.get(
                     sector_name, 0.1  # Default fallback if sector not in tier_production_ratios
+                )
+                sector_logistic_rate = self.tier_logistic_cost_rate.get(
+                    sector_name, 0.05  # Default fallback
                 )
                 
                 new_company = Company(
@@ -763,7 +787,7 @@ class IndustryEnv(gym.Env):
                     sector_id,
                     location,
                     op_cost_rate=self.op_cost_rate,
-                    logistic_cost_rate=self.logistic_cost_rate,
+                    logistic_cost_rate=sector_logistic_rate,
                     revenue_rate=self.revenue_rate,
                     min_distance_epsilon=self.min_distance_epsilon,
                     production_capacity_ratio=sector_production_ratio,

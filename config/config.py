@@ -46,7 +46,16 @@ class EnvironmentConfig:
     nearest_suppliers_count: int = 5
     
     # Logistic cost parameters
-    logistic_cost_rate: float = 1.0
+    disable_logistic_costs: bool = False
+    tier_logistic_cost_rate: dict = field(default_factory=lambda: {
+        "Raw": 0.05,
+        "Parts": 0.05,
+        "Electronics": 0.05,
+        "Battery/Motor": 0.05,
+        "OEM": 0.05,
+        "Service": 0.05,
+        "Other": 0.05
+    })
     
     # Management cost parameters
     max_capital: float = 100000000.0  # 1 billion - threshold for logarithmic cost
