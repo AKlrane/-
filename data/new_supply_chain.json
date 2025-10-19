@@ -1,0 +1,68 @@
+[
+  {
+    "id": 0,
+    "name": "Raw",
+    "suppliers": [],
+    "consumers": [
+      "Small-Parts",
+      "Large-Parts",
+      "Electronics"
+    ]
+  },
+  {
+    "id": 1,
+    "name": "Small-Parts",
+    "suppliers": [
+      "Raw"
+    ],
+    "consumers": [
+      "OEM"
+    ]
+  },
+  {
+    "id": 2,
+    "name": "Large-Parts",
+    "suppliers": [
+      "Raw"
+    ],
+    "consumers": [
+      "OEM"
+    ]
+  },
+  {
+    "id": 3,
+    "name": "Electronics",
+    "suppliers": [
+      "Raw"
+    ],
+    "consumers": [
+      "OEM"
+    ]
+  },
+  {
+    "id": 4,
+    "name": "OEM",
+    "suppliers": [
+      "Small-Parts",
+      "Large-Parts",
+      "Electronics"
+    ],
+    "consumers": [
+      "Service"
+    ]
+  },
+  {
+    "id": 5,
+    "name": "Service",
+    "suppliers": [
+      "OEM"
+    ],
+    "consumers": []
+  },
+  {
+    "id": 6,
+    "name": "Other",
+    "suppliers": [],
+    "consumers": []
+  }
+]
