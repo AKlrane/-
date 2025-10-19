@@ -16,19 +16,18 @@
       "op_cost_rate": 0.002,
       "initial_capital_min": 100000.0,
       "initial_capital_max": 1000000.0,
-      "investment_min": 10000.0,
-      "investment_max": 10000000.0,
+      "fixed_investment_amount": 80000.0,
       "new_company_capital_min": 1000.0,
       "new_company_capital_max": 1000000.0,
       "death_threshold": 1000.0,
-      "fixed_cost_per_step": -5.0
+      "fixed_cost_per_step": -50.0
     },
     "supply_chain": {
       "enable_supply_chain": true,
       "trade_volume_fraction": 0.01,
       "revenue_rate": 1.0,
       "min_distance_epsilon": 0.1,
-      "nearest_suppliers_count": 2
+      "nearest_suppliers_count": 10
     },
     "logistics": {
       "disable_logistic_costs": false,
@@ -61,11 +60,9 @@
       }
     },
     "rewards": {
-      "investment_multiplier": 0.01,
+      "revenue_multiplier": 0.001,
       "creation_reward": 50.0,
-      "invalid_action_penalty": -20.0,
-      "invalid_firm_penalty": -10.0,
-      "profit_multiplier": 0.001
+      "invalid_coordinate_penalty": -100.0
     },
     "visualization": {
       "figsize_width": 18,
@@ -76,11 +73,6 @@
       "plot_format": "png",
       "visualize_every_n_steps": 0,
       "visualization_dir": "visualizations"
-    },
-    "ablation": {
-      "disable_supply_chain": false,
-      "fixed_locations": false,
-      "allow_negative_capital": false
     },
     "products": {
       "enable_products": true,

@@ -31,8 +31,7 @@ class EnvironmentConfig:
     op_cost_rate: float = 0.05
     initial_capital_min: float = 10000.0
     initial_capital_max: float = 100000.0
-    investment_min: float = 0.0
-    investment_max: float = 1000000.0
+    fixed_investment_amount: float = 50000.0
     new_company_capital_min: float = 1000.0
     new_company_capital_max: float = 1000000.0
     death_threshold: float = 0.0
@@ -76,11 +75,9 @@ class EnvironmentConfig:
     })
     
     # Reward parameters
-    investment_multiplier: float = 0.01
+    revenue_multiplier: float = 0.001
     creation_reward: float = 50.0
-    invalid_action_penalty: float = -20.0
-    invalid_firm_penalty: float = -10.0
-    profit_multiplier: float = 0.001
+    invalid_coordinate_penalty: float = -100.0
     
     # Visualization parameters
     figsize_width: int = 18
@@ -91,12 +88,6 @@ class EnvironmentConfig:
     plot_format: str = "png"
     visualize_every_n_steps: int = 0  # 0 = disable periodic visualization, >0 = visualize every N steps
     visualization_dir: str = "visualizations"  # Directory to save visualizations
-    
-    # Ablation switches
-    disable_logistic_costs: bool = False
-    disable_supply_chain: bool = False
-    fixed_locations: bool = False
-    allow_negative_capital: bool = False
     
     # Product system parameters
     enable_products: bool = True
@@ -264,12 +255,12 @@ class Config:
         print(f"   Enabled: {self.environment.enable_supply_chain}")
         print(f"   Trade volume fraction: {self.environment.trade_volume_fraction}")
         print(f"   Revenue rate: {self.environment.revenue_rate}")
-        print(f"   Logistic cost rate: {self.environment.logistic_cost_rate}")
+        print(f"   Logistic costs disabled: {self.environment.disable_logistic_costs}")
         
         print("\n🎁 Rewards:")
+        print(f"   Revenue multiplier: {self.environment.revenue_multiplier}")
         print(f"   Creation reward: {self.environment.creation_reward}")
-        print(f"   Invalid action penalty: {self.environment.invalid_action_penalty}")
-        print(f"   Profit multiplier: {self.environment.profit_multiplier}")
+        print(f"   Invalid coordinate penalty: {self.environment.invalid_coordinate_penalty}")
         
         print("\n🤖 Training:")
         print(f"   Framework: {self.training.framework}")
@@ -286,13 +277,6 @@ class Config:
         print(f"   Save frequency: every {self.training.save_freq:,} steps")
         print(f"   Eval frequency: every {self.training.eval_freq:,} steps")
         
-        print("\n🔬 Ablation Studies:")
-        if self.environment.disable_logistic_costs:
-            print("   ⚠️  Logistic costs DISABLED")
-        if self.environment.disable_supply_chain:
-            print("   ⚠️  Supply chain DISABLED")
-        if not any([self.environment.disable_logistic_costs, self.environment.disable_supply_chain]):
-            print("   All features enabled")
         
         print("=" * 70)
 
@@ -368,7 +352,7 @@ print(f"Environment created with {{obs['num_firms']}} initial firms")
     
     # Modify some parameters
     config.training.total_timesteps = 500000
-    config.environment.logistic_cost_rate = 200.0
+    config.environment.disable_logistic_costs = True
     
     # Save modified config (will be saved to config/ directory)
     config_dir = os.path.dirname(__file__)
@@ -377,4 +361,4 @@ print(f"Environment created with {{obs['num_firms']}} initial firms")
     
     print(f"\nModified configuration saved to {modified_path}")
     print(f"   Total timesteps: {config.training.total_timesteps:,}")
-    print(f"   Logistic cost rate: {config.environment.logistic_cost_rate}")
+    print(f"   Logistic costs disabled: {config.environment.disable_logistic_costs}")

@@ -11,7 +11,7 @@ from env.sector import sector_relations
 from tqdm import tqdm
 
 
-def run_and_visualize(steps: int = 400, initial_firms: int = 150, save_every: int = 20, out_dir: str = "visualizations/periodic"):
+def run_and_visualize(steps: int = 200, initial_firms: int = 150, save_every: int = 20, out_dir: str = "visualizations/periodic"):
     config = load_config("config/config.json")
     # Use config.json settings (no hardcoded overrides)
 
@@ -25,7 +25,8 @@ def run_and_visualize(steps: int = 400, initial_firms: int = 150, save_every: in
 
     for step in tqdm(range(1, steps + 1)):
         # Step environment with zero action (no agent intervention)
-        zero_action = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        # 4 dimensions: [action_type, x, y, tier]
+        zero_action = np.array([0.01, 0.0, 0.0, 0.0], dtype=np.float32)
         obs, reward, terminated, truncated, info = env.step(zero_action)
         
         env.current_step = step
@@ -61,10 +62,10 @@ def run_and_visualize(steps: int = 400, initial_firms: int = 150, save_every: in
             else:
                 ax.scatter([], [])
 
-            # Axes and title
+            # Axes and title (map centered at origin)
             size = getattr(env, 'size', 100.0)
-            ax.set_xlim(0, size)
-            ax.set_ylim(0, size)
+            ax.set_xlim(-size/2, size/2)
+            ax.set_ylim(-size/2, size/2)
             ax.set_aspect('equal', adjustable='box')
 
             alive = len(env.companies)

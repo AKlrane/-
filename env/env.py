@@ -47,8 +47,7 @@ class IndustryEnv(gym.Env):
             self.op_cost_rate = env_config.op_cost_rate
             self.initial_capital_min = env_config.initial_capital_min
             self.initial_capital_max = env_config.initial_capital_max
-            self.investment_min = env_config.investment_min
-            self.investment_max = env_config.investment_max
+            self.fixed_investment_amount = getattr(env_config, "fixed_investment_amount", 50000.0)
             self.new_company_capital_min = env_config.new_company_capital_min
             self.new_company_capital_max = env_config.new_company_capital_max
             self.death_threshold = env_config.death_threshold
@@ -94,16 +93,9 @@ class IndustryEnv(gym.Env):
             })
 
             # Rewards
-            self.investment_multiplier = env_config.investment_multiplier
+            self.revenue_multiplier = env_config.revenue_multiplier
             self.creation_reward = env_config.creation_reward
-            self.invalid_action_penalty = env_config.invalid_action_penalty
-            self.invalid_firm_penalty = env_config.invalid_firm_penalty
-            self.profit_multiplier = env_config.profit_multiplier
-
-            # Ablation
-            self.disable_supply_chain = env_config.disable_supply_chain
-            self.fixed_locations = env_config.fixed_locations
-            self.allow_negative_capital = env_config.allow_negative_capital
+            self.invalid_coordinate_penalty = env_config.invalid_coordinate_penalty
 
             # Product system parameters
             self.enable_products = getattr(env_config, "enable_products", True)
@@ -152,8 +144,7 @@ class IndustryEnv(gym.Env):
             self.op_cost_rate = 0.05
             self.initial_capital_min = 10000.0
             self.initial_capital_max = 100000.0
-            self.investment_min = 0.0
-            self.investment_max = 1000000.0
+            self.fixed_investment_amount = 50000.0
             self.new_company_capital_min = 1000.0
             self.new_company_capital_max = 1000000.0
             self.death_threshold = 0.0
@@ -187,14 +178,9 @@ class IndustryEnv(gym.Env):
                 "Raw": 8.5,
                 "Other": 10.0
             }
-            self.investment_multiplier = 0.01
+            self.revenue_multiplier = 0.001
             self.creation_reward = 50.0
-            self.invalid_action_penalty = -20.0
-            self.invalid_firm_penalty = -10.0
-            self.profit_multiplier = 0.001
-            self.disable_supply_chain = False
-            self.fixed_locations = False
-            self.allow_negative_capital = False
+            self.invalid_coordinate_penalty = -100.0
 
             # Product system defaults
             self.enable_products = True
@@ -237,21 +223,24 @@ class IndustryEnv(gym.Env):
             }
         )
 
+        # Calculate map boundaries based on size (centered at origin)
+        # size = edge length, so coordinates range from -size/2 to +size/2
+        self.map_min = -self.size / 2.0
+        self.map_max = self.size / 2.0
+        
         # Simplified continuous action space for single action per step
         # Box action space with 4 continuous components:
         #   [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
-        #   [1]: amount (continuous value in normalized range 0-1)
-        #   [2]: x coordinate (continuous value in range -20 to 20 km)
-        #   [3]: y coordinate (continuous value in range -20 to 20 km)
+        #   [1]: x coordinate (continuous value in range [map_min, map_max])
+        #   [2]: y coordinate (continuous value in range [map_min, map_max])
+        #   [3]: tier (0.0-1.0, maps to [0,7] -> ceil -> 1-7 -> sector_id 0-6)
+        # Note: Investment amount is fixed (configured via fixed_investment_amount)
+        #       Creation capital is random within [new_company_capital_min, new_company_capital_max]
         self.action_space = gym.spaces.Box(
-            low=np.array([0.0, 0.0, -20.0, -20.0], dtype=np.float32),
-            high=np.array([1.0, 1.0, 20.0, 20.0], dtype=np.float32),
+            low=np.array([0.0, self.map_min, self.map_min, 0.0], dtype=np.float32),
+            high=np.array([1.0, self.map_max, self.map_max, 1.0], dtype=np.float32),
             dtype=np.float32
         )
-        
-        # Map range: ±20 km
-        self.map_min = -20.0
-        self.map_max = 20.0
 
         self.current_step = 0
 
@@ -294,14 +283,10 @@ class IndustryEnv(gym.Env):
            - Companies purchase from suppliers (limited by budget)
            - Companies fulfill customer orders from inventory
 
-        Respects disable_supply_chain and enable_products flags.
+        Respects enable_supply_chain and enable_products flags.
         """
         # Skip if supply chain or products are disabled
-        if (
-            self.disable_supply_chain
-            or not self.enable_supply_chain
-            or not self.enable_products
-        ):
+        if not self.enable_supply_chain or not self.enable_products:
             # Fall back to old generic supply chain simulation
             self._simulate_generic_supply_chain()
             return
@@ -558,56 +543,39 @@ class IndustryEnv(gym.Env):
         """
         Calculate the total reward for the current step.
 
+        New reward formula:
+        reward = (capital_growth - investment_amount) * revenue_multiplier
+               + creation_reward (if created)
+               + invalid_coordinate_penalty (if coordinates out of bounds)
+
         Args:
             info: Information dict containing:
-                - action_result: Result of the single action taken
-                - action_type: Type of action (0=invest, 1=create)
-                - num_valid_actions: 1 if successful, 0 if failed
-                - num_invalid_actions: 0 if successful, 1 if failed
-                - investment_amount: Amount invested (if applicable)
-                - total_profit: Total profit from all companies
-                - total_logistic_cost: Total logistic costs
-                - num_firms: Current number of firms
-                - num_deaths: Number of companies that died
+                - capital_growth: Total capital change in this step
+                - investment_amount: Amount invested (if action is invest)
+                - action_result: Result of the action
+                - coordinates_out_of_bounds: Whether coordinates were out of map range
 
         Returns:
-            Total reward combining action rewards and profit-based reward
+            Total reward
         """
         reward = 0.0
 
-        # Calculate action-specific reward
+        # 1. System revenue reward: (capital_growth - investment) * multiplier
+        #    This rewards actual economic growth, not just capital transfers
+        capital_growth = info.get("capital_growth", 0.0)
+        investment_amount = info.get("investment_amount", 0.0)
+        net_growth = capital_growth - investment_amount
+        reward += net_growth * self.revenue_multiplier
+
+        # 2. Creation reward: Fixed bonus for creating new companies
         action_result = info.get("action_result", "unknown")
-
-        if action_result == "valid_invest":
-            # Reward for successful investment
-            investment_amount = info.get("investment_amount", 0.0)
-            reward += investment_amount * self.investment_multiplier
-
-        elif action_result == "valid_create":
-            # Reward for successful company creation
+        if action_result == "valid_create":
             reward += self.creation_reward
 
-        elif action_result in ["invalid_firm", "invalid_no_firms"]:
-            # Penalty for invalid firm selection
-            reward += self.invalid_firm_penalty
-
-        elif action_result in [
-            "invalid_amount",
-            "invalid_location",
-            "invalid_capacity",
-        ]:
-            # Penalty for invalid action parameters
-            reward += self.invalid_action_penalty
-
-        # Add profit-based reward component using configured multiplier
-        total_profit = info.get("total_profit", 0.0)
-        reward += total_profit * self.profit_multiplier
-
-        # Future: Can add other reward components here, such as:
-        # - Diversity bonus for maintaining multiple sectors
-        # - Efficiency bonus for low logistic costs
-        # - Growth bonus for increasing number of firms
-        # - Stability bonus for low death rate
+        # 3. Coordinate penalty: Penalize out-of-bounds coordinates
+        coordinates_out_of_bounds = info.get("coordinates_out_of_bounds", False)
+        if coordinates_out_of_bounds:
+            reward += self.invalid_coordinate_penalty
 
         return reward
 
@@ -637,20 +605,11 @@ class IndustryEnv(gym.Env):
                 capital = float(capital)
                 
 
-                # Use fixed or random locations based on ablation setting
-                if self.fixed_locations:
-                    # Fixed grid locations
-                    idx = len(self.companies)
-                    grid_size = int(np.sqrt(self.max_company)) + 1
-                    x = (idx % grid_size) * (self.size / grid_size)
-                    y = (idx // grid_size) * (self.size / grid_size)
-                    location = (float(x), float(y))
-                else:
-                    # Random locations
-                    location = (
-                        float(self.np_random.uniform(0, self.size)),
-                        float(self.np_random.uniform(0, self.size)),
-                    )
+                # Random locations (centered at origin)
+                location = (
+                    float(self.np_random.uniform(self.map_min, self.map_max)),
+                    float(self.np_random.uniform(self.map_min, self.map_max)),
+                )
 
                 # Get sector-specific production capacity ratio
                 sector_name = sector_relations[sector_id].name
@@ -691,20 +650,24 @@ class IndustryEnv(gym.Env):
         Args:
             action: Numpy array with 4 continuous values:
                 [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
-                [1]: amount (0.0-1.0, normalized)
-                [2]: x coordinate (-20.0 to 20.0 km)
-                [3]: y coordinate (-20.0 to 20.0 km)
+                [1]: x coordinate (map_min to map_max, i.e., -size/2 to +size/2)
+                [2]: y coordinate (map_min to map_max, i.e., -size/2 to +size/2)
+                [3]: tier (0.0-1.0, maps to sector_id 0-6)
 
         Returns:
             observation, reward, terminated, truncated, info
         """
         self.current_step += 1
 
+        # Record total capital before action
+        total_capital_before = sum(c.capital for c in self.companies)
+
         # Track action results for reward calculation
         action_result = "unknown"
         investment_amount = 0.0
         num_valid_actions = 0
         num_invalid_actions = 0
+        coordinates_out_of_bounds = False
 
         # Decode action (ensure it's a numpy array)
         action = np.asarray(action, dtype=np.float32)
@@ -713,63 +676,74 @@ class IndustryEnv(gym.Env):
         action_type_value = float(action[0])
         is_create = action_type_value >= 0.5
         
-        # Get normalized amount (0-1) and denormalize it
-        amount_normalized = float(np.clip(action[1], 0.0, 1.0))
+        # Get coordinates and check if they are out of bounds
+        x_coord_raw = float(action[1])
+        y_coord_raw = float(action[2])
         
-        # Get coordinates (clamp to valid range)
-        x_coord = float(np.clip(action[2], self.map_min, self.map_max))
-        y_coord = float(np.clip(action[3], self.map_min, self.map_max))
+        # Check if coordinates are out of bounds
+        if (x_coord_raw < self.map_min or x_coord_raw > self.map_max or
+            y_coord_raw < self.map_min or y_coord_raw > self.map_max):
+            coordinates_out_of_bounds = True
+        
+        # Clamp coordinates to valid range for execution
+        x_coord = float(np.clip(x_coord_raw, self.map_min, self.map_max))
+        y_coord = float(np.clip(y_coord_raw, self.map_min, self.map_max))
+        
+        # Get tier and map to sector_id
+        # tier [0,1] -> [0,7] -> ceil -> 1-7 -> sector_id 0-6
+        tier_normalized = float(np.clip(action[3], 0.0, 1.0))
+        tier_value = tier_normalized * 7.0  # Maps to [0, 7]
+        tier_ceiled = int(np.ceil(tier_value))  # Maps to [0, 7], but 0 becomes 1
+        # Clamp to 1-7 and convert to sector_id 0-6
+        tier_ceiled = max(1, min(7, tier_ceiled))
+        target_sector_id = tier_ceiled - 1  # Maps 1-7 to 0-6
 
         if not is_create:
-            # Investment action
-            # Denormalize amount to investment range
-            amt = self.investment_min + amount_normalized * (self.investment_max - self.investment_min)
+            # Investment action - use fixed investment amount
+            amt = self.fixed_investment_amount
             
-            # Find the closest company to (x_coord, y_coord)
+            # Find the closest company to (x_coord, y_coord) with matching sector_id
             if self.num_firms > 0:
                 min_distance = float('inf')
-                closest_company_idx = 0
+                closest_company_idx = None
                 
                 for idx, company in enumerate(self.companies):
-                    dist = np.sqrt(
-                        (company.location[0] - x_coord) ** 2 +
-                        (company.location[1] - y_coord) ** 2
-                    )
-                    if dist < min_distance:
-                        min_distance = dist
-                        closest_company_idx = idx
+                    # Only consider companies with matching sector_id
+                    if company.sector_id == target_sector_id:
+                        dist = np.sqrt(
+                            (company.location[0] - x_coord) ** 2 +
+                            (company.location[1] - y_coord) ** 2
+                        )
+                        if dist < min_distance:
+                            min_distance = dist
+                            closest_company_idx = idx
                 
-                # Invest in the closest company
-                self.companies[closest_company_idx].invest(amt)
-                action_result = "valid_invest"
-                investment_amount = amt
-                num_valid_actions += 1
+                # Invest in the closest company with matching tier
+                if closest_company_idx is not None:
+                    self.companies[closest_company_idx].invest(amt)
+                    action_result = "valid_invest"
+                    investment_amount = amt
+                    num_valid_actions += 1
+                else:
+                    # No companies with matching tier - do nothing (no penalty)
+                    action_result = "no_action"
             else:
-                # No companies to invest in
-                action_result = "invalid_no_firms"
-                num_invalid_actions += 1
+                # No companies to invest in - do nothing (no penalty)
+                action_result = "no_action"
 
         else:
             # Create new company
-            # Denormalize amount to creation capital range
-            init_capital = self.new_company_capital_min + amount_normalized * (
-                self.new_company_capital_max - self.new_company_capital_min
-            )
+            # Use random initial capital within configured range
+            init_capital = float(self.np_random.uniform(
+                self.new_company_capital_min,
+                self.new_company_capital_max
+            ))
             
-            # Choose sector randomly
-            sector_id = int(self.np_random.integers(0, self.num_sectors))
+            # Use the specified sector_id from tier dimension
+            sector_id = target_sector_id
             
-            # Use the specified location (unless fixed_locations is enabled)
-            if self.fixed_locations:
-                # Use grid location based on current number of companies
-                idx = len(self.companies)
-                grid_size = int(np.sqrt(self.max_company)) + 1
-                x = (idx % grid_size) * (self.size / grid_size)
-                y = (idx // grid_size) * (self.size / grid_size)
-                location = (float(x), float(y))
-            else:
-                # Use the action-specified location
-                location = (x_coord, y_coord)
+            # Use the action-specified location
+            location = (x_coord, y_coord)
             
             # Validate we can create a new company
             if self.num_firms < self.max_company:
@@ -820,18 +794,16 @@ class IndustryEnv(gym.Env):
             total_profit += profit
 
         # Remove companies that fall below death threshold
-        # Unless allow_negative_capital is enabled
         num_deaths = 0
-        if not self.allow_negative_capital:
-            companies_to_remove = []
-            for company in self.companies:
-                if company.capital < self.death_threshold:
-                    companies_to_remove.append(company)
-                    num_deaths += 1
+        companies_to_remove = []
+        for company in self.companies:
+            if company.capital < self.death_threshold:
+                companies_to_remove.append(company)
+                num_deaths += 1
 
-            for company in companies_to_remove:
-                self.companies.remove(company)
-                self.num_firms -= 1
+        for company in companies_to_remove:
+            self.companies.remove(company)
+            self.num_firms -= 1
 
         # Calculate product-related statistics
         if self.enable_products:
@@ -846,6 +818,10 @@ class IndustryEnv(gym.Env):
             total_produced = 0.0
             total_sold = 0.0
             total_purchased = 0.0
+
+        # Calculate total capital after action and company operations
+        total_capital_after = sum(c.capital for c in self.companies)
+        capital_growth = total_capital_after - total_capital_before
 
         # Build info dict with action result
         info = {
@@ -862,6 +838,10 @@ class IndustryEnv(gym.Env):
             "total_produced": total_produced,
             "total_sold": total_sold,
             "total_purchased": total_purchased,
+            "total_capital_before": total_capital_before,
+            "total_capital_after": total_capital_after,
+            "capital_growth": capital_growth,
+            "coordinates_out_of_bounds": coordinates_out_of_bounds,
         }
 
         # Calculate total reward using the dedicated method (pass aggregated results)

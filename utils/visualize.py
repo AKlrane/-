@@ -68,9 +68,9 @@ def plot_companies(
         linewidth=0.5
     )
     
-    # Set axis properties
-    ax.set_xlim(0, size)
-    ax.set_ylim(0, size)
+    # Set axis properties (map centered at origin)
+    ax.set_xlim(-size/2, size/2)
+    ax.set_ylim(-size/2, size/2)
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlabel('X Coordinate', fontsize=12)
     ax.set_ylabel('Y Coordinate', fontsize=12)
@@ -203,9 +203,10 @@ def plot_capital_distribution(
     capital_grid = np.zeros((grid_size, grid_size))
     
     for company in companies:
-        # Map to grid coordinates
-        grid_x = int((company.x / size) * grid_size)
-        grid_y = int((company.y / size) * grid_size)
+        # Map to grid coordinates (map centered at origin)
+        # Transform from [-size/2, size/2] to [0, grid_size]
+        grid_x = int(((company.x + size/2) / size) * grid_size)
+        grid_y = int(((company.y + size/2) / size) * grid_size)
         
         # Clamp to valid range
         grid_x = max(0, min(grid_size - 1, grid_x))
@@ -220,7 +221,7 @@ def plot_capital_distribution(
         cmap='YlOrRd',
         interpolation='bilinear',
         origin='lower',
-        extent=(0, size, 0, size)
+        extent=(-size/2, size/2, -size/2, size/2)  # Map centered at origin
     )
     
     # Add colorbar
@@ -285,9 +286,9 @@ def plot_sector_clusters(
         color = SECTOR_COLORS[sector_id % len(SECTOR_COLORS)]
         ax.scatter(x_coords, y_coords, c=color, s=sizes, alpha=0.6, edgecolors='black', linewidth=0.5)
         
-        # Customize subplot
-        ax.set_xlim(0, size)
-        ax.set_ylim(0, size)
+        # Customize subplot (map centered at origin)
+        ax.set_xlim(-size/2, size/2)
+        ax.set_ylim(-size/2, size/2)
         ax.set_aspect('equal', adjustable='box')
         sector_name = sector_relations[sector_id].name if sector_id < len(sector_relations) else f"Sector {sector_id}"
         ax.set_title(f'{sector_name} (n={len(sector_companies)})', fontsize=10)
@@ -358,9 +359,9 @@ def plot_network_connections(
         linewidth=1
     )
     
-    # Customize plot
-    ax.set_xlim(0, size)
-    ax.set_ylim(0, size)
+    # Customize plot (map centered at origin)
+    ax.set_xlim(-size/2, size/2)
+    ax.set_ylim(-size/2, size/2)
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlabel('X Coordinate', fontsize=12)
     ax.set_ylabel('Y Coordinate', fontsize=12)
@@ -403,8 +404,8 @@ def create_dashboard(
     sizes = [np.sqrt(c.capital) / 10 for c in env.companies]
     
     ax1.scatter(x_coords, y_coords, c=colors, s=sizes, alpha=0.6, edgecolors='black', linewidth=0.5)
-    ax1.set_xlim(0, env.size)
-    ax1.set_ylim(0, env.size)
+    ax1.set_xlim(-env.size/2, env.size/2)
+    ax1.set_ylim(-env.size/2, env.size/2)
     ax1.set_aspect('equal', adjustable='box')
     ax1.set_title('Company Locations', fontsize=12, fontweight='bold')
     ax1.set_xlabel('X Coordinate')
