@@ -42,21 +42,11 @@ class Company:
             logistic_cost_rate  # Controls magnitude of distance-based costs
         )
         # Set unit price by sector/tier mapping from config
+        # 必须从config传入，没有硬编码默认值
         if tier_prices is None:
-            tier_prices = {
-                "Raw": 10.0,
-                "Parts": 36.0,
-                "Electronics": 85.0,
-                "Battery/Motor": 250.0,
-                "OEM": 3000.0,
-                "Service": 7000.0,
-                "Other": 10.5,
-            }
+            tier_prices = {}
         if tier_cogs is None:
-            tier_cogs = {
-                "Raw": 8.5,
-                "Other": 10.0
-            }
+            tier_cogs = {}
         self.tier_prices = tier_prices
         self.tier_cogs = tier_cogs
         sector_name = sector_relations[sector_id].name
@@ -91,24 +81,32 @@ class Company:
         if sector_name == "Raw":
             self.product_unit_cost = self.unit_cogs  # Use config COGS for Raw
         elif sector_name == "Parts":
-            self.product_unit_cost = 3.0 * tier_prices.get("Raw", 1.0) if tier_prices else 3.0
+            # 所有值必须从config的tier_prices读取，没有硬编码默认值
+            raw_price = tier_prices.get("Raw", 0.0) if tier_prices else 0.0
+            self.product_unit_cost = 3.0 * raw_price
         elif sector_name == "Electronics":
-            self.product_unit_cost = 7.0 * tier_prices.get("Raw", 1.0) if tier_prices else 7.0
+            raw_price = tier_prices.get("Raw", 0.0) if tier_prices else 0.0
+            self.product_unit_cost = 7.0 * raw_price
         elif sector_name == "Battery/Motor":
-            self.product_unit_cost = 20.0 * tier_prices.get("Raw", 1.0) if tier_prices else 20.0
+            raw_price = tier_prices.get("Raw", 0.0) if tier_prices else 0.0
+            self.product_unit_cost = 20.0 * raw_price
         elif sector_name == "OEM":
             # Approximate OEM cost based on new decoupled logic
             # Average of three production routes: 20*Parts, 10*Electronics, 4*Battery
+            # 所有值必须从config的tier_prices读取，没有硬编码默认值
             if tier_prices:
-                cost_from_parts = 20 * tier_prices.get("Parts", 5.0)
-                cost_from_elec = 10 * tier_prices.get("Electronics", 12.0)
-                cost_from_batt = 4 * tier_prices.get("Battery/Motor", 35.0)
-                self.product_unit_cost = (cost_from_parts + cost_from_elec + cost_from_batt) / 3.0
+                cost_from_parts = 20 * tier_prices.get("Parts", 0.0)
+                cost_from_elec = 10 * tier_prices.get("Electronics", 0.0)
+                cost_from_batt = 4 * tier_prices.get("Battery/Motor", 0.0)
+                total_cost = cost_from_parts + cost_from_elec + cost_from_batt
+                self.product_unit_cost = total_cost / 3.0 if total_cost > 0 else 0.0
             else:
-                self.product_unit_cost = 160.0  # Default estimate
+                self.product_unit_cost = 0.0
         elif sector_name == "Service":
             # Service cost based on OEM
-            self.product_unit_cost = 2.0 * tier_prices.get("OEM", 450.0) if tier_prices else 900.0
+            # 所有值必须从config的tier_prices读取，没有硬编码默认值
+            oem_price = tier_prices.get("OEM", 0.0) if tier_prices else 0.0
+            self.product_unit_cost = 2.0 * oem_price
         else:
             self.product_unit_cost = self.unit_cogs  # Other sectors use unit_cogs
         

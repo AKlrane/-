@@ -496,6 +496,127 @@ def create_dashboard(
     return fig
 
 
+def create_comparison_dashboard(
+    env_no_action: IndustryEnv,
+    env_with_model: IndustryEnv,
+    step: int,
+    figsize: Tuple[int, int] = (36, 12)
+) -> Optional[Figure]:
+    """
+    Create a side-by-side comparison dashboard of two environments.
+    
+    Args:
+        env_no_action: Environment without intervention
+        env_with_model: Environment with model actions
+        step: Current step number
+        figsize: Figure size (width, height)
+        
+    Returns:
+        matplotlib Figure object
+    """
+    fig = Figure(figsize=figsize)
+    
+    # Create grid layout: 2 columns (left: no action, right: with model)
+    # 使用统一的尺寸和对齐，确保图表整齐
+    map_size = max(env_no_action.size, env_with_model.size)
+    gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.2, 
+                         left=0.06, right=0.94, top=0.93, bottom=0.07,
+                         height_ratios=[1.2, 1], width_ratios=[1, 1])
+    
+    # Helper function to plot a single environment
+    def plot_env_subplot(ax, env, title_prefix):
+        # Main location plot
+        x_coords = [c.x for c in env.companies]
+        y_coords = [c.y for c in env.companies]
+        colors = [SECTOR_COLORS[c.sector_id % len(SECTOR_COLORS)] for c in env.companies]
+        sizes = [np.sqrt(c.capital) / 10 for c in env.companies]
+        
+        ax.scatter(x_coords, y_coords, c=colors, s=sizes, alpha=0.6, edgecolors='black', linewidth=0.5)
+        # 使用统一的map_size确保两个子图的axis limits一致，图表对齐
+        ax.set_xlim(-map_size/2, map_size/2)
+        ax.set_ylim(-map_size/2, map_size/2)
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_title(f'{title_prefix} - Step {step}', fontsize=14, fontweight='bold')
+        ax.set_xlabel('X Coordinate', fontsize=11)
+        ax.set_ylabel('Y Coordinate', fontsize=11)
+        ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # Top row: Location plots
+    ax1 = fig.add_subplot(gs[0, 0])
+    plot_env_subplot(ax1, env_no_action, "No Intervention")
+    
+    ax2 = fig.add_subplot(gs[0, 1])
+    plot_env_subplot(ax2, env_with_model, "Model Investment")
+    
+    # Bottom row: Statistics comparison
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.axis('off')
+    
+    # Statistics for no action
+    total_capital_na = sum(c.capital for c in env_no_action.companies)
+    total_companies_na = len(env_no_action.companies)
+    sector_counts_na = {}
+    for company in env_no_action.companies:
+        sector_counts_na[company.sector_id] = sector_counts_na.get(company.sector_id, 0) + 1
+    
+    stats_text_na = f"""
+    NO INTERVENTION STATISTICS
+    {'='*45}
+    
+    Total Companies:      {total_companies_na}
+    Current Step:         {env_no_action.current_step}
+    Total Capital:        ${total_capital_na:,.0f}
+    Sectors Active:       {len(sector_counts_na)}
+    
+    {'='*45}
+    SECTOR DISTRIBUTION
+    {'='*45}
+    """
+    for sid, count in sorted(sector_counts_na.items()):
+        sector_name = sector_relations[sid].name if sid < len(sector_relations) else f"S{sid}"
+        stats_text_na += f"\n{sector_name:20s}: {count:3d}"
+    
+    ax3.text(0.05, 0.95, stats_text_na, transform=ax3.transAxes,
+             fontsize=11, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.4, pad=1.0))
+    
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.axis('off')
+    
+    # Statistics for with model
+    total_capital_wm = sum(c.capital for c in env_with_model.companies)
+    total_companies_wm = len(env_with_model.companies)
+    sector_counts_wm = {}
+    for company in env_with_model.companies:
+        sector_counts_wm[company.sector_id] = sector_counts_wm.get(company.sector_id, 0) + 1
+    
+    stats_text_wm = f"""
+    MODEL INVESTMENT STATISTICS
+    {'='*45}
+    
+    Total Companies:      {total_companies_wm}
+    Current Step:         {env_with_model.current_step}
+    Total Capital:        ${total_capital_wm:,.0f}
+    Sectors Active:       {len(sector_counts_wm)}
+    
+    {'='*45}
+    SECTOR DISTRIBUTION
+    {'='*45}
+    """
+    for sid, count in sorted(sector_counts_wm.items()):
+        sector_name = sector_relations[sid].name if sid < len(sector_relations) else f"S{sid}"
+        stats_text_wm += f"\n{sector_name:20s}: {count:3d}"
+    
+    ax4.text(0.05, 0.95, stats_text_wm, transform=ax4.transAxes,
+             fontsize=11, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.4, pad=1.0))
+    
+    # Add main title
+    fig.suptitle(f'Environment Comparison - Step {step:06d}', fontsize=20, fontweight='bold', y=0.98)
+    
+    return fig
+
+
 if __name__ == "__main__":
     # Example usage
     print("=== Visualization Demo ===\n")

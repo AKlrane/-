@@ -61,7 +61,7 @@ class EnvironmentConfig:
     
     # Pricing parameters
     tier_prices: dict = field(default_factory=lambda: {
-        "Raw": 10.0,
+        "Raw": 1.0,
         "Parts": 50.0,
         "Electronics": 120.0,
         "Battery/Motor": 350.0,
@@ -75,8 +75,8 @@ class EnvironmentConfig:
     })
     
     # Reward parameters
-    revenue_multiplier: float = 0.001
-    creation_reward: float = 50.0
+    revenue_multiplier: float = 0.003
+    creation_reward: float = 10.0
     invalid_coordinate_penalty: float = -100.0
     
     # Visualization parameters

@@ -11,7 +11,7 @@ from env.sector import sector_relations
 from tqdm import tqdm
 
 
-def run_and_visualize(steps: int = 200, initial_firms: int = 150, save_every: int = 20, out_dir: str = "visualizations/periodic"):
+def run_and_visualize(steps: int = 256, initial_firms: int = 50, save_every: int = 20, out_dir: str = "visualizations/periodic"):
     config = load_config("config/config.json")
     # Use config.json settings (no hardcoded overrides)
 
@@ -112,7 +112,7 @@ def run_and_visualize(steps: int = 200, initial_firms: int = 150, save_every: in
     print("="*80)
     
     # Print statistics at key milestones
-    milestones = [10, 50, 100, 200, 300, 400, 500]
+    milestones = [10, 50, 100, 200, 256]
     for milestone in milestones:
         if milestone <= len(stats_history):
             stat = stats_history[milestone - 1]

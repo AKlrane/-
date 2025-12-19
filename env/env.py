@@ -77,20 +77,9 @@ class IndustryEnv(gym.Env):
             # Management cost
             self.max_capital = getattr(env_config, "max_capital", 100000000.0)
             
-            # Pricing
-            self.tier_prices = getattr(env_config, "tier_prices", {
-                "Raw": 10.0,
-                "Parts": 36.0,
-                "Electronics": 85.0,
-                "Battery/Motor": 250.0,
-                "OEM": 3000.0,
-                "Service": 7000.0,
-                "Other": 10.5
-            })
-            self.tier_cogs = getattr(env_config, "tier_cogs", {
-                "Raw": 8.5,
-                "Other": 10.0
-            })
+            # Pricing - 必须从config读取，没有默认值
+            self.tier_prices = getattr(env_config, "tier_prices", {})
+            self.tier_cogs = getattr(env_config, "tier_cogs", {})
 
             # Rewards
             self.revenue_multiplier = env_config.revenue_multiplier
@@ -165,22 +154,12 @@ class IndustryEnv(gym.Env):
                 "Other": 0.05
             }
             self.max_capital = 100000000.0
-            self.tier_prices = {
-                "Raw": 10.0,
-                "Parts": 36.0,
-                "Electronics": 85.0,
-                "Battery/Motor": 250.0,
-                "OEM": 3000.0,
-                "Service": 7000.0,
-                "Other": 10.5
-            }
-            self.tier_cogs = {
-                "Raw": 8.5,
-                "Other": 10.0
-            }
+            # 使用默认配置时，pricing必须从config读取，这里使用空字典
+            self.tier_prices = {}
+            self.tier_cogs = {}
             self.revenue_multiplier = 0.001
-            self.creation_reward = 50.0
-            self.invalid_coordinate_penalty = -100.0
+            self.creation_reward = 5.0
+            self.invalid_coordinate_penalty = -10.0
 
             # Product system defaults
             self.enable_products = True
@@ -543,8 +522,10 @@ class IndustryEnv(gym.Env):
         """
         Calculate the total reward for the current step.
 
-        New reward formula:
-        reward = (capital_growth - investment_amount) * revenue_multiplier
+        Reward formula:
+        reward = log10(net_growth + 1) if net_growth > 0 (profitable, scaled by magnitude)
+               = -1.0 if net_growth < 0 (loss, fixed penalty)
+               = 0.0 if net_growth == 0 (break-even)
                + creation_reward (if created)
                + invalid_coordinate_penalty (if coordinates out of bounds)
 
@@ -560,12 +541,17 @@ class IndustryEnv(gym.Env):
         """
         reward = 0.0
 
-        # 1. System revenue reward: (capital_growth - investment) * multiplier
-        #    This rewards actual economic growth, not just capital transfers
+        # 1. System revenue reward: Log-scaled for profit, fixed penalty for loss
         capital_growth = info.get("capital_growth", 0.0)
         investment_amount = info.get("investment_amount", 0.0)
         net_growth = capital_growth - investment_amount
-        reward += net_growth * self.revenue_multiplier
+        if net_growth > 0:
+            # 正利润：使用log10压缩，保留规模信息
+            reward += np.log10(net_growth + 1.0)
+        elif net_growth < 0:
+            # 负利润：统一为-1.0，简化处理
+            reward += -1.0
+        # net_growth == 0 时 reward += 0，保持不变
 
         # 2. Creation reward: Fixed bonus for creating new companies
         action_result = info.get("action_result", "unknown")
@@ -773,6 +759,9 @@ class IndustryEnv(gym.Env):
                 self.num_firms += 1
                 action_result = "valid_create"
                 num_valid_actions += 1
+                # 修复：将新公司的初始资本计入investment_amount，作为成本扣除
+                # 这样在计算net_growth时会正确扣除创建新公司的成本
+                investment_amount = init_capital
 
                 # Rebuild supply chain network when new company is added
                 if self.enable_products:

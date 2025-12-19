@@ -1,124 +1,258 @@
-"""
-Main training script for Industry Simulation RL agents.
-Supports Stable-Baselines3 framework and custom training loops.
-"""
-
-import argparse
 import os
-import time
-from datetime import datetime
 from pathlib import Path
-import json
+from datetime import datetime
 import numpy as np
-from typing import Optional
+import gymnasium as gym
+from gymnasium import spaces
+import torch
+import torch.nn as nn
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback, BaseCallback
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from env import IndustryEnv
-from utils import create_dashboard
 from config import load_config, Config
-import matplotlib.pyplot as plt
 
 
-def create_env(config: Config, seed: Optional[int] = None):
-    """Create a single environment instance."""
+class EpisodeLengthWrapper(gym.Wrapper):
+    """
+    强制限制episode长度为n_steps的Wrapper。
+    每个环境运行n_steps步后自动truncated，然后PPO会自动reset环境。
+    这样可以确保每个rollout周期都是"新鲜"的环境状态，防止公司数量无限增长。
+    """
+    def __init__(self, env, max_episode_steps: int):
+        super().__init__(env)
+        self.max_episode_steps = max_episode_steps
+        self.current_step = 0
+    
+    def reset(self, **kwargs):
+        """重置环境并重置步数计数器"""
+        self.current_step = 0
+        return self.env.reset(**kwargs)
+    
+    def step(self, action):
+        """执行一步，如果达到最大步数则truncated"""
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.current_step += 1
+        
+        # 达到最大步数时强制truncated
+        if self.current_step >= self.max_episode_steps:
+            truncated = True
+        
+        return obs, reward, terminated, truncated, info
+
+
+class RewardScaleWrapper(gym.RewardWrapper):
+    """
+    Wrapper to scale rewards by a factor to reduce value estimation error.
+    This helps stabilize training by keeping value estimates in a reasonable range.
+    """
+    def __init__(self, env, scale: float = 0.1):
+        super().__init__(env)
+        self.scale = scale
+    
+    def reward(self, reward):
+        return reward * self.scale
+
+
+class MapObservationWrapper(gym.ObservationWrapper):
+    """
+    Wrapper to convert company locations into a discrete grid map.
+    Creates a [H, W, C=7] tensor where each channel represents the sum of log(capital) 
+    for companies of that sector type in each grid cell.
+    
+    Optimized version: pre-computes normalization factors and uses vectorized operations.
+    """
+    def __init__(self, env, grid_size: int = None):
+        super().__init__(env)
+        # 获取底层IndustryEnv（可能需要unwrap多个wrapper）
+        base_env = env
+        while hasattr(base_env, 'env'):
+            base_env = base_env.env
+        
+        self.env = env  # 保存包装后的环境（用于step等操作）
+        self.base_env = base_env  # 保存底层IndustryEnv（用于访问属性）
+        
+        # 从底层环境获取属性
+        self.grid_size = int(base_env.size) if grid_size is None else grid_size
+        self.num_sectors = base_env.num_sectors
+        
+        # Pre-compute normalization factors (only computed once)
+        self.map_min = base_env.map_min
+        self.map_max = base_env.map_max
+        self.map_range = self.map_max - self.map_min
+        
+        self.observation_space = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(self.grid_size, self.grid_size, self.num_sectors),
+            dtype=np.float32
+        )
+    
+    def observation(self, obs):
+        # Pre-allocate grid map
+        grid_map = np.zeros((self.grid_size, self.grid_size, self.num_sectors), dtype=np.float32)
+        
+        # Early return if no companies
+        if len(self.base_env.companies) == 0:
+            return grid_map
+        
+        # Vectorized computation: extract all company data at once
+        companies = self.base_env.companies
+        n_companies = len(companies)
+        
+        # Pre-allocate arrays for vectorized operations
+        x_coords = np.array([c.location[0] for c in companies], dtype=np.float32)
+        y_coords = np.array([c.location[1] for c in companies], dtype=np.float32)
+        sector_ids = np.array([c.sector_id for c in companies], dtype=np.int32)
+        capitals = np.array([c.capital for c in companies], dtype=np.float32)
+        
+        # Normalize coordinates (vectorized)
+        x_norm = np.clip((x_coords - self.map_min) / self.map_range, 0.0, 1.0)
+        y_norm = np.clip((y_coords - self.map_min) / self.map_range, 0.0, 1.0)
+        
+        # Convert to grid indices (vectorized)
+        grid_x = np.clip((x_norm * self.grid_size).astype(np.int32), 0, self.grid_size - 1)
+        grid_y = np.clip((y_norm * self.grid_size).astype(np.int32), 0, self.grid_size - 1)
+        
+        # Compute log1p of capitals (vectorized)
+        capital_log = np.log1p(capitals)
+        
+        # Filter valid sector IDs
+        valid_mask = (sector_ids >= 0) & (sector_ids < self.num_sectors)
+        
+        # Accumulate into grid map (using advanced indexing)
+        for i in range(n_companies):
+            if valid_mask[i]:
+                grid_map[grid_y[i], grid_x[i], sector_ids[i]] += capital_log[i]
+        
+        return grid_map
+
+
+class CNNFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.Space, features_dim: int = 256):
+        super().__init__(observation_space, features_dim)
+        
+        if isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 3:
+            h, w, c = observation_space.shape
+        else:
+            h, w, c = 40, 40, 7
+        
+        self.num_channels = c
+        
+        self.cnn = nn.Sequential(
+            nn.Conv2d(c, 16, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Flatten(),
+        )
+        
+        conv_output_size = 5 * 5 * 64
+        self.fc = nn.Sequential(
+            nn.Linear(conv_output_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, features_dim),
+            nn.ReLU(),
+        )
+    
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        if observations.dim() == 4 and observations.shape[-1] == self.num_channels:
+            observations = observations.permute(0, 3, 1, 2)
+        
+        x = self.cnn(observations)
+        x = self.fc(x)
+        return x
+
+
+def create_env(config: Config, seed=None, max_episode_steps=256):
+    """
+    创建环境，强制每个episode最多运行max_episode_steps步。
+    
+    Args:
+        config: 配置对象
+        seed: 随机种子（用于重置时的随机初始化）
+        max_episode_steps: 每个episode的最大步数（默认256，与n_steps一致）
+    """
     env = IndustryEnv(config.environment)
     if seed is not None:
         env.reset(seed=seed, options={"initial_firms": config.environment.initial_firms})
+    
+    # 强制限制episode长度为max_episode_steps
+    # 这样每个rollout周期后环境会自动reset，重新随机初始化
+    env = EpisodeLengthWrapper(env, max_episode_steps=max_episode_steps)
+    
+    # 应用观察和奖励wrapper
+    env = MapObservationWrapper(env)
+    env = RewardScaleWrapper(env, scale=0.1)  # 将reward缩小10倍，降低value估计误差
     return env
 
 
-def train_stable_baselines3(config: Config):
-    """Train using Stable-Baselines3."""
-    try:
-        from stable_baselines3 import PPO, A2C, SAC
-        from stable_baselines3.common.vec_env import DummyVecEnv
-        from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-        from stable_baselines3.common.monitor import Monitor
-    except ImportError:
-        print("ERROR: Stable-Baselines3 not installed!")
-        print("Install with: pip install stable-baselines3")
-        return
-    
-    # Create vectorized environment
+def train(config: Config):
     def make_env(i):
         def _init():
-            env = create_env(config, seed=config.training.seed + i)
+            # 每个环境使用不同的seed，确保重置时随机初始化不同
+            # max_episode_steps=256，确保每个rollout周期后自动reset
+            env = create_env(config, seed=config.training.seed + i, max_episode_steps=256)
             env = Monitor(env, filename=os.path.join(config.training.log_dir, f"env_{i}"))
             return env
         return _init
     
-    vec_env = DummyVecEnv([make_env(i) for i in range(config.training.num_envs)])
+    # 使用SubprocVecEnv实现真正的并行环境（利用多核CPU）
+    # DummyVecEnv是串行的，SubprocVecEnv是真正并行的
+    num_envs = 16
+    vec_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
     
-    # Create evaluation environment
-    eval_env = Monitor(create_env(config, seed=config.training.seed + 1000))
+    # 评估环境也使用相同的创建方式，但只需要单个环境
+    # 使用DummyVecEnv包装单个环境，保持与训练环境类型一致
+    def make_eval_env():
+        def _init():
+            env = create_env(config, seed=config.training.seed + 1000, max_episode_steps=256)
+            env = Monitor(env, filename=os.path.join(config.training.log_dir, "eval_env"))
+            return env
+        return _init
     
-    # Select algorithm
-    algorithm_map = {
-        "ppo": PPO,
-        "a2c": A2C,
-    }
+    eval_env = DummyVecEnv([make_eval_env()])
     
-    if config.training.algorithm not in algorithm_map:
-        print(f"Unknown algorithm: {config.training.algorithm}. Using PPO.")
-        config.training.algorithm = "ppo"
-    
-    AlgorithmClass = algorithm_map[config.training.algorithm]
-    
-    # Configure large MLP network architecture (~20-30 MB model)
-    import torch.nn as nn
+    # 强制使用CPU（PPO在CPU上效率更高，特别是对于非CNN策略）
+    device = "cpu"
     
     policy_kwargs = dict(
-        net_arch=dict(
-            pi=[1024, 1024, 512, 512, 256],  # Actor: 5 layers
-            vf=[1024, 1024, 512, 512, 256]   # Critic: 5 layers
-        ),
+        features_extractor_class=CNNFeatureExtractor,
+        features_extractor_kwargs=dict(features_dim=256),
+        net_arch=dict(pi=[256, 128], vf=[256, 128]),
         activation_fn=nn.ReLU,
     )
     
-    print(f"🧠 Network: [1024×5] → ~20-30 MB | Envs: {config.training.num_envs} | LR: {config.training.learning_rate}")
-    
-    # Determine device (GPU if available)
-    import torch
-    device = config.training.device
-    
-    # Handle "auto" device selection
-    if device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-            print(f"🎮 GPU detected: {torch.cuda.get_device_name(0)}")
-        else:
-            device = "cpu"
-            print("💻 Using CPU (no GPU detected)")
-    else:
-        # Manual device specification
-        if "cuda" in device and torch.cuda.is_available():
-            gpu_id = 0 if device == "cuda" else int(device.split(":")[1])
-            print(f"🎮 Using GPU: {torch.cuda.get_device_name(gpu_id)} ({device})")
-        elif device == "cpu":
-            print("💻 Using CPU (manual)")
-        else:
-            print(f"⚠️  Device '{device}' not available, falling back to CPU")
-            device = "cpu"
-    
-    # Create model
-    model = AlgorithmClass(
-        "MultiInputPolicy",
+    model = PPO(
+        "MlpPolicy",
         vec_env,
-        learning_rate=config.training.learning_rate,
-        n_steps=config.training.n_steps,
-        batch_size=config.training.batch_size,
+        learning_rate=config.training.learning_rate * 0.5,
+        n_steps=256,  # 每个环境收集256步
+        batch_size=256,  # 设置为与n_steps相同，确保每个rollout的数据在一个batch中训练
         gamma=config.training.gamma,
+        n_epochs=4,  # 每次rollout后训练4个epoch
         verbose=1,
         tensorboard_log=config.training.log_dir,
         seed=config.training.seed,
         policy_kwargs=policy_kwargs,
-        device=device
+        device=device,
+        vf_coef=config.training.vf_coef,  # 使用配置中的vf_coef (0.05)
+        ent_coef=config.training.ent_coef,  # 使用配置中的ent_coef
+        clip_range_vf=None,  # 不clip value function，让value loss自然下降
     )
     
-    # Create callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=config.training.save_freq // config.training.num_envs,
         save_path=config.training.checkpoint_dir,
-        name_prefix=f"{config.training.algorithm}_model"
+        name_prefix="cnn_ppo_model"
     )
     
     eval_callback = EvalCallback(
@@ -130,374 +264,58 @@ def train_stable_baselines3(config: Config):
         render=False
     )
     
-    # Training
-    print("\n⏳ Starting training...\n")
+    rollout_steps = num_envs * 256  # 每次rollout的步数
     
-    start_time = time.time()
+    print(f"\n训练配置:")
+    print(f"  并行环境数: {num_envs} (使用SubprocVecEnv真正并行，利用多核CPU)")
+    print(f"  n_steps: 256, batch_size: 256")
+    print(f"  每次rollout: {rollout_steps} 步 ({num_envs}环境×256步)")
+    print(f"  学习率: {config.training.learning_rate * 0.5:.6f}, n_epochs: 4")
+    print(f"  vf_coef: {config.training.vf_coef}, ent_coef: {config.training.ent_coef}, reward_scale: 0.1")
+    print(f"  设备: CPU (优化多核CPU使用)")
+    print(f"  评估频率: 每{config.training.eval_freq}步评估一次")
+    print(f"  每个episode最大步数: 256 (每个rollout周期后自动重置)")
+    print(f"  TensorBoard: {config.training.log_dir}")
+    print(f"\n训练流程说明:")
+    print(f"  1. Rollout阶段: 每个环境独立运行256步，收集(obs, action, reward, done, info)数据")
+    print(f"     - 16个环境并行运行，总共收集{rollout_steps}步数据")
+    print(f"     - 每个环境运行256步后自动truncated，PPO会自动reset环境")
+    print(f"     - Reset时会重新随机初始化（seed不同，初始公司位置和资本都不同）")
+    print(f"  2. 训练阶段: 用收集的数据训练4个epoch")
+    print(f"     - 数据包括: observations (环境全貌), actions, rewards, values, log_probs")
+    print(f"     - 数据在rollout时收集，训练时在CPU/GPU上批量处理")
+    print(f"  3. 环境重置时机:")
+    print(f"     - 每个环境运行256步后自动truncated → PPO自动reset")
+    print(f"     - Reset时使用env.reset(seed=seed+i)，重新随机初始化")
+    print(f"     - 每个环境使用不同的seed，确保初始状态不同")
+    print(f"  4. 进度条显示的是环境交互总步数（包括rollout和评估时的环境交互）\n")
     
-    try:
-        # Try to use progress bar with tqdm
-        try:
-            model.learn(
-                total_timesteps=config.training.total_timesteps,
-                callback=[checkpoint_callback, eval_callback],
-                progress_bar=True
-            )
-        except ImportError:
-            # If tqdm not available, train without progress bar
-            print("⚠️  tqdm not available, training without progress bar...")
-            model.learn(
-                total_timesteps=config.training.total_timesteps,
-                callback=[checkpoint_callback, eval_callback],
-                progress_bar=False
-            )
-    except KeyboardInterrupt:
-        print("\n\n⛔ Training interrupted by user.")
+    model.learn(
+        total_timesteps=config.training.total_timesteps,
+        callback=[checkpoint_callback, eval_callback],
+        progress_bar=True,
+        log_interval=1  # 每个iteration都记录训练指标到TensorBoard
+    )
     
-    training_time = time.time() - start_time
-    
-    # Save final model
-    final_path = os.path.join(config.training.checkpoint_dir, f"{config.training.algorithm}_final")
+    final_path = os.path.join(config.training.checkpoint_dir, "cnn_ppo_final")
     model.save(final_path)
-    
-    print("\n" + "="*70)
-    print(f"✅ Training completed in {training_time/60:.1f} minutes ({training_time/3600:.2f} hours)")
-    print(f"💾 Model saved: {final_path}")
-    print("="*70)
-    
-    # Evaluate final model
-    print("\nEvaluating final model...")
-    evaluate_model_sb3(model, config, num_episodes=10)
     
     vec_env.close()
     eval_env.close()
-    
     return model
 
 
-def train_custom(config: Config):
-    """Custom training loop (for educational purposes or custom algorithms)."""
-    print("="*60)
-    print("Custom Training Loop")
-    print("="*60)
-    
-    env = create_env(config, seed=config.training.seed)
-    
-    print(f"\nEnvironment created")
-    print(f"Observation space: {env.observation_space}")
-    print(f"Action space: {env.action_space}")
-    
-    # Initialize simple random policy for demonstration
-    print("\nRunning random policy for demonstration...")
-    print("(Implement your custom algorithm here)")
-    
-    episode_rewards = []
-    num_episodes = config.training.total_timesteps // 1000  # Approximate
-    
-    start_time = time.time()
-    
-    initial_firms = config.environment.initial_firms
-    
-    for episode in range(num_episodes):
-        obs, info = env.reset(seed=config.training.seed + episode, options={"initial_firms": initial_firms})
-        done = False
-        episode_reward = 0
-        step = 0
-        
-        while not done and step < 1000:
-            # Random action (replace with your policy)
-            action = env.action_space.sample()
-            
-            obs, reward, terminated, truncated, info = env.step(action)
-            episode_reward += reward
-            done = terminated or truncated
-            step += 1
-        
-        episode_rewards.append(episode_reward)
-        
-        if (episode + 1) % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-10:])
-            print(f"Episode {episode+1}/{num_episodes} - Avg Reward: {avg_reward:.2f} - Steps: {step} - Firms: {info['num_firms']}")
-        
-        # Visualize periodically
-        if (episode + 1) % (config.training.visualize_freq // 1000) == 0:
-            fig = create_dashboard(env)
-            if fig is not None:
-                fig_path = os.path.join(config.training.log_dir, f"dashboard_episode_{episode+1}.png")
-                fig.savefig(fig_path, dpi=config.environment.dpi, bbox_inches='tight')
-                plt.close(fig)
-                print(f"  Dashboard saved to {fig_path}")
-    
-    training_time = time.time() - start_time
-    
-    print("\n" + "="*60)
-    print("Training completed!")
-    print("="*60)
-    print(f"Training time: {training_time/60:.2f} minutes")
-    print(f"Average reward: {np.mean(episode_rewards):.2f}")
-    print(f"Final episode firms: {info['num_firms']}")
-    
-    # Save training history
-    history_path = os.path.join(config.training.log_dir, "training_history.json")
-    with open(history_path, 'w') as f:
-        json.dump({
-            "episode_rewards": episode_rewards,
-            "num_episodes": num_episodes,
-            "training_time": training_time,
-            "config": vars(config)
-        }, f, indent=2)
-    
-    print(f"Training history saved to {history_path}")
-    
-    return episode_rewards
-
-
-def evaluate_model_sb3(model, config: Config, num_episodes: int = 10):
-    """Evaluate a trained Stable-Baselines3 model."""
-    from stable_baselines3.common.monitor import Monitor
-    
-    eval_env = Monitor(create_env(config, seed=config.training.seed + 9999))
-    initial_firms = config.environment.initial_firms
-    
-    episode_rewards = []
-    episode_lengths = []
-    
-    for episode in range(num_episodes):
-        obs, info = eval_env.reset(seed=config.training.seed + episode + 10000, options={"initial_firms": initial_firms})
-        done = False
-        episode_reward = 0
-        step = 0
-        
-        while not done and step < 1000:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = eval_env.step(action)
-            episode_reward += reward
-            done = terminated or truncated
-            step += 1
-        
-        episode_rewards.append(episode_reward)
-        episode_lengths.append(step)
-        
-        print(f"  Episode {episode+1}: Reward={episode_reward:.2f}, Steps={step}, Firms={info['num_firms']}")
-    
-    print(f"\nEvaluation Results:")
-    print(f"  Mean reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
-    print(f"  Mean length: {np.mean(episode_lengths):.1f} ± {np.std(episode_lengths):.1f}")
-    
-    # Visualize final episode
-    fig = create_dashboard(eval_env.unwrapped)
-    if fig is not None:
-        fig_path = os.path.join(config.training.log_dir, "evaluation_dashboard.png")
-        fig.savefig(fig_path, dpi=config.environment.dpi, bbox_inches='tight')
-        plt.close(fig)
-        print(f"  Evaluation dashboard saved to {fig_path}")
-    
-    eval_env.close()
-
-
 def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description="Train RL agents for Industry Simulation")
+    config = load_config("config/config.json")
     
-    # Configuration file
-    parser.add_argument("--config", type=str, default="config/config.json",
-                       help="Path to configuration file (default: config/config.json)")
-    
-    # Framework and algorithm (can override config)
-    parser.add_argument("--framework", type=str, default=None,
-                       help="RL framework to use (overrides config)")
-    parser.add_argument("--algorithm", type=str, default=None,
-                       help="RL algorithm (overrides config)")
-    
-    # Training parameters (can override config)
-    parser.add_argument("--timesteps", type=int, default=None,
-                       help="Total training timesteps (overrides config)")
-    parser.add_argument("--num-envs", type=int, default=None,
-                       help="Number of parallel environments (overrides config)")
-    parser.add_argument("--lr", type=float, default=None,
-                       help="Learning rate (overrides config)")
-    parser.add_argument("--batch-size", type=int, default=None,
-                       help="Batch size (overrides config)")
-    parser.add_argument("--gamma", type=float, default=None,
-                       help="Discount factor (overrides config)")
-    parser.add_argument("--seed", type=int, default=None,
-                       help="Random seed (overrides config)")
-    parser.add_argument("--device", type=str, default=None,
-                       help="Device to use: 'auto', 'cuda', 'cpu', 'cuda:0', etc. (overrides config)")
-    
-    # Environment parameters (can override config)
-    parser.add_argument("--env-size", type=float, default=None,
-                       help="Environment spatial size (overrides config)")
-    parser.add_argument("--max-company", type=int, default=None,
-                       help="Maximum number of companies (overrides config)")
-    parser.add_argument("--initial-firms", type=int, default=None,
-                       help="Initial number of firms (overrides config)")
-    parser.add_argument("--logistic-cost-rate", type=float, default=None,
-                       help="Logistic cost rate (overrides config)")
-    parser.add_argument("--revenue-rate", type=float, default=None,
-                       help="Revenue rate (overrides config)")
-    parser.add_argument("--death-threshold", type=float, default=None,
-                       help="Company death threshold (overrides config)")
-    
-    # Logging and checkpoints (can override config)
-    parser.add_argument("--log-dir", type=str, default=None,
-                       help="Directory for logs (overrides config)")
-    parser.add_argument("--checkpoint-dir", type=str, default=None,
-                       help="Directory for checkpoints (overrides config)")
-    parser.add_argument("--save-freq", type=int, default=None,
-                       help="Save checkpoint every N steps (overrides config)")
-    parser.add_argument("--eval-freq", type=int, default=None,
-                       help="Evaluate every N steps (overrides config)")
-    parser.add_argument("--visualize-freq", type=int, default=None,
-                       help="Create visualization every N steps (overrides config)")
-    
-    # Modes
-    parser.add_argument("--mode", type=str, default="train",
-                       choices=["train", "eval", "demo"],
-                       help="Mode: train, eval, or demo (default: train)")
-    parser.add_argument("--model-path", type=str, default=None,
-                       help="Path to model for evaluation or demo")
-    
-    args = parser.parse_args()
-    
-    # Load configuration from file
-    print(f"\nLoading configuration from: {args.config}")
-    global_config = load_config(args.config)
-    
-    # Apply command-line overrides
-    if args.framework is not None:
-        global_config.training.framework = args.framework
-    if args.algorithm is not None:
-        global_config.training.algorithm = args.algorithm
-    if args.timesteps is not None:
-        global_config.training.total_timesteps = args.timesteps
-    if args.num_envs is not None:
-        global_config.training.num_envs = args.num_envs
-    if args.lr is not None:
-        global_config.training.learning_rate = args.lr
-    if args.batch_size is not None:
-        global_config.training.batch_size = args.batch_size
-    if args.gamma is not None:
-        global_config.training.gamma = args.gamma
-    if args.seed is not None:
-        global_config.training.seed = args.seed
-    if args.device is not None:
-        global_config.training.device = args.device
-
-    # Environment overrides
-    if args.env_size is not None:
-        global_config.environment.size = args.env_size
-    if args.max_company is not None:
-        global_config.environment.max_company = args.max_company
-    if args.initial_firms is not None:
-        global_config.environment.initial_firms = args.initial_firms
-    if args.logistic_cost_rate is not None:
-        global_config.environment.logistic_cost_rate = args.logistic_cost_rate
-    if args.revenue_rate is not None:
-        global_config.environment.revenue_rate = args.revenue_rate
-    if args.death_threshold is not None:
-        global_config.environment.death_threshold = args.death_threshold
-    
-    # Checkpoint overrides (now in training config)
-    if args.log_dir is not None:
-        global_config.training.log_dir = args.log_dir
-    if args.checkpoint_dir is not None:
-        global_config.training.checkpoint_dir = args.checkpoint_dir
-    if args.save_freq is not None:
-        global_config.training.save_freq = args.save_freq
-    if args.eval_freq is not None:
-        global_config.training.eval_freq = args.eval_freq
-    if args.visualize_freq is not None:
-        global_config.training.visualize_freq = args.visualize_freq
-    
-    # Configuration loaded (simplified output)
-    
-    # Create timestamp-based directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    framework = global_config.training.framework
-    algorithm = global_config.training.algorithm
+    config.training.log_dir = os.path.join(config.training.log_dir, f"cnn_ppo_{timestamp}")
+    config.training.checkpoint_dir = os.path.join(config.training.checkpoint_dir, f"cnn_ppo_{timestamp}")
     
-    # Update log and checkpoint directories with timestamp
-    base_log_dir = global_config.training.log_dir
-    base_checkpoint_dir = global_config.training.checkpoint_dir
-    global_config.training.log_dir = os.path.join(base_log_dir, f"{framework}_{algorithm}_{timestamp}")
-    global_config.training.checkpoint_dir = os.path.join(base_checkpoint_dir, f"{framework}_{algorithm}_{timestamp}")
+    Path(config.training.log_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.training.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     
-    # Create directories
-    Path(global_config.training.log_dir).mkdir(parents=True, exist_ok=True)
-    Path(global_config.training.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Print simplified training info
-    print("\n" + "="*70)
-    print(f"🚀 Training: {global_config.training.algorithm.upper()} | {global_config.training.total_timesteps:,} steps | Seed {global_config.training.seed}")
-    print(f"📁 Logs: {global_config.training.log_dir}")
-    print("="*70 + "\n")
-    
-    # Save config
-    config_path = os.path.join(global_config.training.log_dir, "config.json")
-    global_config.to_json(config_path)
-    
-    # Execute based on mode
-    if args.mode == "train":
-        # Training
-        if global_config.training.framework == "sb3":
-            model = train_stable_baselines3(global_config)
-        elif global_config.training.framework == "custom":
-            model = train_custom(global_config)
-        else:
-            print(f"Unknown framework: {global_config.training.framework}. Only 'sb3' and 'custom' are supported.")
-            return
-    
-    elif args.mode == "eval":
-        # Evaluation
-        if args.model_path is None:
-            print("ERROR: --model-path required for evaluation mode")
-            return
-        
-        if global_config.training.framework == "sb3":
-            from stable_baselines3 import PPO, A2C
-            algorithm_map = {"ppo": PPO, "a2c": A2C}
-            AlgorithmClass = algorithm_map[global_config.training.algorithm]
-            model = AlgorithmClass.load(args.model_path)
-            evaluate_model_sb3(model, global_config, num_episodes=20)
-        else:
-            print(f"Evaluation not yet implemented for {global_config.training.framework}")
-    
-    elif args.mode == "demo":
-        # Demo mode - visualize a trained agent
-        print("Demo mode - running trained agent with visualization")
-        if args.model_path is None:
-            print("WARNING: No model path provided, using random policy")
-        
-        initial_firms = global_config.environment.initial_firms
-        env = create_env(global_config, seed=global_config.training.seed)
-        obs, info = env.reset(seed=global_config.training.seed, options={"initial_firms": initial_firms})
-        
-        for step in range(100):
-            if args.model_path and global_config.training.framework == "sb3":
-                from stable_baselines3 import PPO, A2C
-                algorithm_map = {"ppo": PPO, "a2c": A2C}
-                AlgorithmClass = algorithm_map.get(global_config.training.algorithm, PPO)
-                model = AlgorithmClass.load(args.model_path)
-                action, _ = model.predict(obs, deterministic=True)
-            else:
-                action = env.action_space.sample()
-            
-            obs, reward, terminated, truncated, info = env.step(action)
-            
-            if step % 10 == 0:
-                print(f"Step {step}: Reward={reward:.2f}, Firms={info['num_firms']}, Action={info['action_type']}")
-            
-            if terminated or truncated:
-                break
-        
-        # Show final visualization
-        fig = create_dashboard(env)
-        plt.show()
-    
-    print("\n" + "="*60)
-    print("DONE")
-    print("="*60 + "\n")
+    train(config)
 
 
 if __name__ == "__main__":
