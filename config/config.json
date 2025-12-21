@@ -3,42 +3,40 @@
     "spatial": {
       "size": 40.0,
       "num_sectors": 7,
-      "max_episode_steps": 256
+      "max_episode_steps": 64
     },
     "capacity": {
-      "max_company": 100,
+      "max_company": 360,
       "initial_firms": 50
     },
-    "actions": {
-      "max_actions_per_step": 3
-    },
     "company": {
-      "op_cost_rate": 0.002,
+      "op_cost_rate": 0.001,
       "initial_capital_min": 100000.0,
       "initial_capital_max": 1000000.0,
-      "fixed_investment_amount": 80000.0,
-      "new_company_capital_min": 1000.0,
-      "new_company_capital_max": 1000000.0,
-      "death_threshold": 1000.0,
-      "fixed_cost_per_step": -250.0
+      "fixed_investment_amount": 200000.0,
+      "new_company_capital_min": 200000.0,
+      "new_company_capital_max": 200000.0,
+      "death_threshold": 3000.0,
+      "fixed_cost_per_step": -50
     },
     "supply_chain": {
       "enable_supply_chain": true,
       "trade_volume_fraction": 0.01,
       "revenue_rate": 1.0,
       "min_distance_epsilon": 0.1,
-      "nearest_suppliers_count": 5
+      "nearest_suppliers_count": 3
     },
     "logistics": {
       "disable_logistic_costs": false,
+      "free_delivery_distance": 5.0,
       "tier_logistic_cost_rate": {
-        "Raw": 0.25,
-        "Parts": 0.25,
-        "Electronics": 0.3,
-        "Battery/Motor": 0.3,
+        "Raw": 0.1,
+        "Parts": 0.22,
+        "Electronics": 0.22,
+        "Battery/Motor": 0.22,
         "OEM": 0.1,
-        "Service": 0.07,
-        "Other": 0.05
+        "Service": 0.05,
+        "Other": 0.1
       }
     },
     "management": {
@@ -46,23 +44,24 @@
     },
     "pricing": {
       "tier_prices": {
-        "Raw": 0.95,
-        "Parts": 3.7,
-        "Electronics": 8,
-        "Battery/Motor": 24,
-        "OEM": 280.0,
-        "Service": 1100.0,
+        "Raw": 1,
+        "Parts": 9,
+        "Electronics": 22,
+        "Battery/Motor": 65,
+        "OEM": 380.0,
+        "Service": 1300.0,
         "Other": 10
       },
       "tier_cogs": {
-        "Raw": 2.94,
-        "Other": 10.0
+        "Raw": 0.5,
+        "Other": 100.0
       }
     },
     "rewards": {
-      "revenue_multiplier": 0.001,
-      "creation_reward": 2.0,
-      "invalid_coordinate_penalty": -10.0
+      "creation_reward": 0.10,
+      "invalid_coordinate_penalty": -10.0,
+      "invalid_tier": -10.0,
+      "invalid_action": -10.0
     },
     "visualization": {
       "figsize_width": 18,
@@ -77,17 +76,17 @@
     "products": {
       "enable_products": true,
       "tier_production_ratios": {
-        "Raw": 0.01,
-        "Parts": 0.004,
-        "Electronics": 0.004,
-        "Battery/Motor": 0.004,
-        "OEM": 0.010,
-        "Service": 0.010,
-        "Other": 0.0
+        "Raw": 0.025,
+        "Parts": 0.01,
+        "Electronics": 0.01,
+        "Battery/Motor": 0.01,
+        "OEM": 0.022,
+        "Service": 0.022,
+        "Other": 0.01
       },
 
       "max_held_capital_rate": {
-        "Raw": 0.5,
+        "Raw": 0.6,
         "Parts": 0.2,
         "Electronics": 0.2,
         "Battery/Motor": 0.2,
@@ -100,15 +99,15 @@
   "training": {
     "framework": "sb3",
     "algorithm": "ppo",
-    "total_timesteps": 1000000,
-    "num_envs": 4,
-    "learning_rate": 0.0003,
-    "batch_size": 512,
+    "total_timesteps": 5000000,
+    "num_envs": 32,
+    "learning_rate": 0.0001,
+    "batch_size": 64,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,
-    "ent_coef": 0.0,
-    "vf_coef": 0.05,
+    "ent_coef": 0.05,
+    "vf_coef": 0.01,
     "max_grad_norm": 0.5,
     "n_steps": 512,
     "n_epochs": 10,
@@ -117,8 +116,8 @@
     "device": "auto",
     "log_dir": "./logs",
     "checkpoint_dir": "./checkpoints",
-    "save_freq": 50000,
-    "eval_freq": 25000,
+    "save_freq": 10000,
+    "eval_freq": 50000,
     "visualize_freq": 100000,
     "n_eval_episodes": 10,
     "save_best_model": true,

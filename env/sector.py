@@ -41,9 +41,9 @@ sector_relations = [
     Sector(1, "Parts", ["Raw"], ["OEM"], operating_cost_multiplier=1.2),
     Sector(2, "Electronics", ["Raw"], ["OEM"], operating_cost_multiplier=1.1),
     Sector(3, "Battery/Motor", ["Raw"], ["OEM"], operating_cost_multiplier=1.1),
-    Sector(4, "OEM", ["Parts", "Electronics", "Battery/Motor"], ["Service"], operating_cost_multiplier=1.0),
-    Sector(5, "Service", ["OEM"], [], operating_cost_multiplier=0.8),
-    Sector(6, "Other", [], [], operating_cost_multiplier=1.0),
+    Sector(4, "OEM", ["Parts", "Electronics", "Battery/Motor"], ["Service"], operating_cost_multiplier=0.8),
+    Sector(5, "Service", ["OEM"], [], operating_cost_multiplier=0.3),
+    Sector(6, "Other", [], [], operating_cost_multiplier=4.0),
 ]
 
 NUM_SECTORS = 7

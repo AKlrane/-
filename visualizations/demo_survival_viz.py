@@ -11,12 +11,14 @@ from env.sector import sector_relations
 from tqdm import tqdm
 
 
-def run_and_visualize(steps: int = 256, initial_firms: int = 50, save_every: int = 20, out_dir: str = "visualizations/periodic"):
+def run_and_visualize(steps: int = 64, initial_firms: int = 100, save_every: int = 5, out_dir: str = "visualizations/periodic"):
     config = load_config("config/config.json")
     # Use config.json settings (no hardcoded overrides)
 
     env = IndustryEnv(config.environment)
-    obs, _ = env.reset(seed=42, options={"initial_firms": initial_firms})
+    # Set fixed_investment_amount to 0 for pure internal simulation without external intervention
+    env.fixed_investment_amount = 0.0
+    obs, _ = env.reset(options={"initial_firms": initial_firms})
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     
@@ -25,8 +27,16 @@ def run_and_visualize(steps: int = 256, initial_firms: int = 50, save_every: int
 
     for step in tqdm(range(1, steps + 1)):
         # Step environment with zero action (no agent intervention)
-        # 4 dimensions: [action_type, x, y, tier]
-        zero_action = np.array([0.01, 0.0, 0.0, 0.0], dtype=np.float32)
+        # Since fixed_investment_amount is set to 0, investment will be skipped
+        # 4 dimensions: [logits_invest, logits_create, x, y]
+        # Tier is determined by environment rotation (0-5, cycling)
+        # Use high logit for invest to ensure invest action is selected
+        zero_action = np.array([
+            5.0,  # logits_invest (high value to select invest)
+            -5.0,  # logits_create (low value)
+            0.0,  # x coordinate
+            0.0  # y coordinate
+        ], dtype=np.float32)
         obs, reward, terminated, truncated, info = env.step(zero_action)
         
         env.current_step = step
@@ -112,7 +122,7 @@ def run_and_visualize(steps: int = 256, initial_firms: int = 50, save_every: int
     print("="*80)
     
     # Print statistics at key milestones
-    milestones = [10, 50, 100, 200, 256]
+    milestones = [10, 20, 40, 64]
     for milestone in milestones:
         if milestone <= len(stats_history):
             stat = stats_history[milestone - 1]

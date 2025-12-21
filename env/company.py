@@ -28,6 +28,7 @@ class Company:
         fixed_income: float = -5.0,
         tier_prices: dict = None,
         tier_cogs: dict = None,
+        free_delivery_distance: float = 5.0,
     ):
         self.capital = capital
         self.sector_id = sector_id
@@ -54,6 +55,7 @@ class Company:
         self.min_distance_epsilon = (
             min_distance_epsilon  # Minimum distance to prevent division by zero
         )
+        self.free_delivery_distance = free_delivery_distance  # Distance threshold for free delivery
         self.revenue = 0.0
         self.orders = 0
         self.logistic_cost = 0.0  # Track accumulated logistic costs
@@ -151,15 +153,21 @@ class Company:
         """
         Calculate logistic cost to transport goods to another company.
         New definition: cost = rate * unit_price * volume * distance
+        If distance <= free_delivery_distance, logistic cost is waived (free local delivery).
 
         Args:
             other: The destination company
             trade_volume: Volume of goods to transport (units)
 
         Returns:
-            Logistic cost based on distance, unit price and volume
+            Logistic cost based on distance, unit price and volume (0 if distance <= free_delivery_distance)
         """
         distance = self.distance_to(other)
+        
+        # Free local delivery: if distance <= free_delivery_distance, no logistic cost
+        if distance <= self.free_delivery_distance:
+            return 0.0
+        
         unit_price = self.revenue_rate
         cost = self.logistic_cost_rate * unit_price * trade_volume * max(distance, self.min_distance_epsilon)
 

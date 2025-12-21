@@ -1,0 +1,331 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{float}
+
+\geometry{left=2.5cm,right=2.5cm,top=3cm,bottom=3cm}
+
+\title{AI社会科学大作业-经济部分}
+\author{宋一旸 \quad 许智翔 \quad 刘超然}
+\date{2025-12-22}
+
+\begin{document}
+
+\maketitle
+
+\section{背景介绍}
+
+产业集群模拟是一项重要的经济仿真任务，旨在通过计算模型模拟真实世界中企业之间的相互作用、产业链关系和空间分布规律。本研究基于天津产业集群的真实数据，构建了一个可模拟产业集群自然演化过程的计算模型。
+
+\subsection{天津产业集群数据}
+
+本研究使用的数据来源于天津产业集群的真实企业数据。根据\texttt{data}文件夹中的企业分类数据，我们拥有927家企业的详细信息，包括：
+
+\begin{itemize}
+    \item \textbf{企业基本信息}：企业名称、成立日期、登记状态等
+    \item \textbf{行业分类}：企业所属的7个行业类别（原材料、零部件、电子、电池/电机、整车制造、服务、其他）
+    \item \textbf{企业规模}：大型、中型、小型、微型企业的分布情况
+    \item \textbf{空间位置}：企业的地理坐标信息，反映产业集群的空间分布特征
+    \item \textbf{资本信息}：企业的初始资本规模，总资本约4250万元人民币
+\end{itemize}
+
+数据分析显示，天津产业集群呈现出明显的行业分布特征：零部件企业占主导地位（78.5\%），其次是电子企业（13.0\%）和电池/电机企业（5.7\%）。从企业规模来看，微型企业占65.6\%，反映了产业集群以中小企业为主的特征。
+
+\subsection{研究目标}
+
+通过观察数据，我们发现天津产业集群具有以下特征：
+\begin{enumerate}
+    \item \textbf{行业类别分布}：7个行业类别形成清晰的产业链关系，从上游的原材料到下游的整车制造和服务
+    \item \textbf{空间分布特征}：企业在空间上呈现一定的聚集模式，反映了产业集群的地理集聚效应
+    \item \textbf{企业生命周期}：企业存在成立、运营、消亡的完整生命周期，约61\%的企业已经停止运营
+\end{enumerate}
+
+基于这些观察，我们的研究目标是：
+\begin{enumerate}
+    \item 构建一个产业链模型，模拟产业集群的自然生长过程（无外界干涉），尽量利用已知的行业分类、空间分布、企业规模等信息
+    \item 在此基础上，学习一个强化学习投资策略，探索当有固定投资额度时，如何通过投资或建厂来获得更好的经济优势
+\end{enumerate}
+
+\section{方法}
+
+\subsection{环境设定}
+
+天津产业集群面积广大、企业众多，直接模拟整个集群在计算上较为困难。因此，我们抽象概括出了一种更小、更一般、可以用于任意地区产业的交易模型。我们的所有研究都建立在这个模型上。该模型大约比天津集群小20倍，在保持核心经济机制的同时，大大降低了计算复杂度。
+
+\subsubsection{产业链分类和次序}
+
+模型定义了7个行业类别，形成清晰的产业链关系：
+
+\begin{enumerate}
+    \item \textbf{原材料（Raw）}：产业链的最上游，为其他行业提供基础原材料
+    \item \textbf{零部件（Parts）}：使用原材料生产汽车零部件
+    \item \textbf{电子（Electronics）}：使用原材料生产电子控制系统和传感器
+    \item \textbf{电池/电机（Battery/Motor）}：使用原材料生产动力系统
+    \item \textbf{整车制造（OEM）}：整合零部件、电子和电池/电机，生产最终产品
+    \item \textbf{服务（Service）}：为整车制造提供销售、维修等服务
+    \item \textbf{其他（Other）}：其他相关行业
+\end{enumerate}
+
+产业链的层级关系为：Raw $\rightarrow$ \{Parts, Electronics, Battery/Motor\} $\rightarrow$ OEM $\rightarrow$ Service。每个层级的企业只能从上游层级购买产品，向下游层级销售产品。
+
+\subsubsection{商品和生产流程}
+
+模型采用基于产品的交易系统：
+\begin{itemize}
+    \item 每个企业根据其行业类别和资本规模，具有不同的生产能力
+    \item 生产能力由资本规模和生产比例决定：$生产量 = 资本 \times 生产比例$
+    \item 不同行业的生产比例不同：原材料行业为2.5\%，零部件、电子、电池/电机为1\%，整车制造和服务为2.2\%
+    \item 企业生产的产品存储在库存中，用于满足下游企业的订单需求
+\end{itemize}
+
+\subsubsection{交易流程}
+
+交易流程采用买方驱动模型：
+\begin{enumerate}
+    \item \textbf{需求计算}：下游企业根据其生产能力和订单需求，计算所需的上游产品数量
+    \item \textbf{订单分配}：每个买方企业向最近的K个供应商（默认K=3）发送订单请求
+    \item \textbf{供应分配}：供应商根据自身库存和买方距离，按比例分配产品
+    \item \textbf{交易执行}：完成交易后，买方支付货款，供应商获得收入
+\end{enumerate}
+
+交易量由\texttt{trade\_volume\_fraction}参数控制（默认1\%），表示每个时间步的交易量占企业资本的比例。
+
+\subsubsection{买卖订单的分配}
+
+订单分配遵循以下规则：
+\begin{itemize}
+    \item 每个买方企业优先选择距离最近的供应商
+    \item 考虑运输成本，距离越近的供应商获得越多的订单份额
+    \item 供应商的库存和资本限制其能够满足的订单数量
+    \item 采用距离加权分配：$分配比例 \propto \frac{1}{距离^2 + \epsilon}$
+\end{itemize}
+
+\subsubsection{管理成本}
+
+企业运营需要支付管理成本：
+\begin{itemize}
+    \item \textbf{运营成本}：与资本规模成正比，$运营成本 = 资本 \times 运营成本率 \times 行业系数$
+    \item \textbf{行业系数}：不同行业的运营成本系数不同，原材料行业为1.5，零部件为1.2，电子和电池/电机为1.1，整车制造为0.8，服务为0.3
+    \item \textbf{固定成本}：每个时间步支付固定的运营成本（默认-50）
+    \item \textbf{资本上限}：企业资本有上限（默认1亿元），超过上限会产生额外的管理成本
+\end{itemize}
+
+\subsubsection{固定成本}
+
+除了运营成本外，企业还需要支付：
+\begin{itemize}
+    \item 每步固定的运营费用（\texttt{fixed\_cost\_per\_step}，默认-50）
+    \item 资本持有成本：企业持有的资本超过一定比例时，会产生额外的持有成本
+    \item 不同行业的资本持有上限不同：原材料、整车制造、服务行业为60\%，零部件、电子、电池/电机为20\%
+\end{itemize}
+
+\subsubsection{运输成本的设计}
+
+运输成本采用距离的逆平方定律：
+\begin{equation}
+运输成本 = \frac{运输成本率 \times 交易量}{距离^2 + \epsilon}
+\end{equation}
+
+其中：
+\begin{itemize}
+    \item 不同行业的运输成本率不同：原材料为0.1，零部件、电子、电池/电机为0.22，整车制造为0.1，服务为0.05
+    \item 距离小于\texttt{free\_delivery\_distance}（默认5.0）的交易免运费
+    \item $\epsilon$为最小距离常数（默认0.1），防止距离为0时的数值问题
+\end{itemize}
+
+这种设计反映了真实世界中运输成本随距离快速增加的特征，鼓励企业在空间上形成产业集群。
+
+\subsubsection{空间设定}
+
+环境设定在二维平面上：
+\begin{itemize}
+    \item 空间大小：40$\times$40单位（比天津集群小约20倍）
+    \item 企业位置：随机分布在空间内，或根据真实数据的地理坐标映射
+    \item 最大企业数：360家（可根据配置调整）
+    \item 初始企业数：50家（可根据配置调整）
+\end{itemize}
+
+\subsection{强化学习设计}
+
+\subsubsection{问题设定}
+
+假设我们有一定金额、固定期数的外来资金，可以用于：
+\begin{enumerate}
+    \item \textbf{投资现有企业}：向现有企业注入资金，增加其资本规模，提高生产能力
+    \item \textbf{建立新企业}：在指定位置和行业类别建立新企业
+\end{enumerate}
+
+我们的目标是学习一个投资策略，使得在固定投资预算下，能够获得更好的经济优势。这里的"优势"可以通过以下指标衡量：
+\begin{itemize}
+    \item 产业集群的总资本增长
+    \item 企业数量的增长
+    \item 产业链的完整性和稳定性
+    \item 空间集聚效应
+\end{itemize}
+
+\subsubsection{模型架构}
+
+我们采用基于CNN的特征提取器和MLP策略网络：
+
+\textbf{观察空间处理}：
+\begin{itemize}
+    \item 将企业位置和资本信息转换为网格地图（Grid Map）
+    \item 网格大小：40$\times$40，与空间大小一致
+    \item 通道数：7个行业通道 + 1个当前层级通道 = 8通道
+    \item 每个网格单元存储该位置所有企业的资本对数和的行业分布
+\end{itemize}
+
+\textbf{CNN特征提取器}：
+\begin{itemize}
+    \item 输入：40$\times$40$\times$8的网格地图
+    \item 结构：3层卷积 + 2层全连接
+    \item 卷积层：Conv2d(8, 16) $\rightarrow$ Conv2d(16, 32) $\rightarrow$ Conv2d(32, 64)
+    \item 池化：每层后接MaxPool2d(2$\times$2)
+    \item 全连接：512 $\rightarrow$ 256维特征向量
+\end{itemize}
+
+\textbf{策略和价值网络}：
+\begin{itemize}
+    \item 策略网络（Actor）：256 $\rightarrow$ 128 $\rightarrow$ 动作分布
+    \item 价值网络（Critic）：256 $\rightarrow$ 128 $\rightarrow$ 价值估计
+    \item 激活函数：ReLU
+\end{itemize}
+
+\subsubsection{观察空间}
+
+观察空间为连续的多维张量：
+\begin{itemize}
+    \item \textbf{网格地图}：40$\times$40$\times$8的浮点张量
+    \item \textbf{行业通道}：7个通道，每个通道存储对应行业在该位置的企业资本对数
+    \item \textbf{层级通道}：1个通道，存储当前时间步的产业链层级信息（0-5，归一化到0-1）
+    \item \textbf{归一化}：所有值归一化到合理范围，便于神经网络处理
+\end{itemize}
+
+\subsubsection{动作空间}
+
+动作空间为连续4维向量：
+\begin{equation}
+a = [logits_{invest}, logits_{create}, x, y]
+\end{equation}
+
+其中：
+\begin{itemize}
+    \item $logits_{invest}$：投资动作的logit值，用于选择投资还是建厂
+    \item $logits_{create}$：建厂动作的logit值
+    \item $x, y$：目标位置的坐标（归一化到[-1, 1]）
+\end{itemize}
+
+动作选择逻辑：
+\begin{enumerate}
+    \item 根据$logits_{invest}$和$logits_{create}$的softmax概率选择动作类型
+    \item 如果选择投资：在$(x, y)$位置附近寻找最近的企业进行投资
+    \item 如果选择建厂：在$(x, y)$位置建立新企业，行业类别由当前时间步的层级循环决定（0-5对应6个主要行业）
+\end{enumerate}
+
+\subsubsection{算法框架}
+
+采用Proximal Policy Optimization (PPO)算法，使用Stable-Baselines3框架：
+
+\textbf{PPO超参数}：
+\begin{itemize}
+    \item 学习率：0.0001
+    \item 折扣因子（$\gamma$）：0.99
+    \item GAE参数（$\lambda$）：0.95
+    \item 裁剪范围（clip range）：0.2
+    \item 价值函数系数：0.01
+    \item 熵系数：0.05
+    \item 最大梯度范数：0.5
+\end{itemize}
+
+\textbf{训练设置}：
+\begin{itemize}
+    \item 并行环境数：32
+    \item 每环境收集步数（n\_steps）：64
+    \item 批次大小（batch\_size）：64
+    \item 训练轮数（n\_epochs）：10
+    \item 总训练步数：5,000,000
+\end{itemize}
+
+\textbf{环境包装}：
+\begin{itemize}
+    \item \texttt{EpisodeLengthWrapper}：限制每个episode最大长度为64步
+    \item \texttt{MapObservationWrapper}：将企业信息转换为网格地图
+    \item \texttt{Monitor}：记录训练过程中的统计信息
+\end{itemize}
+
+\subsubsection{奖励设定}
+
+奖励函数设计考虑多个因素：
+
+\textbf{正向奖励}：
+\begin{itemize}
+    \item \textbf{创建奖励}：成功建立新企业获得奖励（默认0.1）
+    \item \textbf{资本增长}：产业集群总资本的增长
+    \item \textbf{产业链完整性}：不同行业类别企业的均衡发展
+\end{itemize}
+
+\textbf{负向惩罚}：
+\begin{itemize}
+    \item \textbf{无效坐标惩罚}：动作坐标超出空间范围（-10.0）
+    \item \textbf{无效层级惩罚}：选择的行业层级不符合当前时间步（-10.0）
+    \item \textbf{无效动作惩罚}：其他无效动作（-10.0）
+\end{itemize}
+
+总奖励计算：
+\begin{equation}
+R_{total} = R_{creation} + \alpha \cdot \Delta Capital + \beta \cdot Penalties
+\end{equation}
+
+其中$\alpha$和$\beta$为权重系数，通过实验调整。
+
+\subsubsection{Loss设计}
+
+PPO算法的损失函数包括三部分：
+
+\textbf{策略损失（Policy Loss）}：
+\begin{equation}
+L^{CLIP}(\theta) = \mathbb{E}_t[\min(r_t(\theta)\hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t)]
+\end{equation}
+
+其中：
+\begin{itemize}
+    \item $r_t(\theta) = \frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{old}}(a_t|s_t)}$为重要性采样比率
+    \item $\hat{A}_t$为优势函数估计（使用GAE）
+    \item $\epsilon=0.2$为裁剪范围
+\end{itemize}
+
+\textbf{价值损失（Value Loss）}：
+\begin{equation}
+L^{VF}(\theta) = \mathbb{E}_t[(V_\theta(s_t) - \hat{V}_t)^2]
+\end{equation}
+
+其中$\hat{V}_t$为价值目标（使用n步回报）。
+
+\textbf{熵损失（Entropy Loss）}：
+\begin{equation}
+L^{ENT}(\theta) = \mathbb{E}_t[H(\pi_\theta(\cdot|s_t))]
+\end{equation}
+
+总损失：
+\begin{equation}
+L(\theta) = -L^{CLIP}(\theta) + c_1 L^{VF}(\theta) - c_2 L^{ENT}(\theta)
+\end{equation}
+
+其中$c_1=0.01$（价值函数系数），$c_2=0.05$（熵系数）。
+
+\section{实验}
+
+% 实验部分留空，待补充
+
+\section{结论}
+
+% 结论部分留空，待补充
+
+\end{document}
+

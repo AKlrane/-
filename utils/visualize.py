@@ -3,8 +3,11 @@ Visualization utilities for the Industry Simulation Environment.
 Uses matplotlib to create interactive visualizations of company locations, sectors, and metrics.
 """
 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for server environments
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.patches as mpatches
 import numpy as np
 from typing import List, Optional, Tuple
@@ -391,6 +394,8 @@ def create_dashboard(
         return None
     
     fig = Figure(figsize=figsize)
+    # Create canvas for the figure to enable rendering
+    canvas = FigureCanvasAgg(fig)
     
     # Create grid layout with better spacing
     gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.25, 
@@ -515,6 +520,8 @@ def create_comparison_dashboard(
         matplotlib Figure object
     """
     fig = Figure(figsize=figsize)
+    # Create canvas for the figure to enable rendering
+    canvas = FigureCanvasAgg(fig)
     
     # Create grid layout: 2 columns (left: no action, right: with model)
     # 使用统一的尺寸和对齐，确保图表整齐

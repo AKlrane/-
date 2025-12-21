@@ -40,9 +40,6 @@ class IndustryEnv(gym.Env):
             self.num_sectors = env_config.num_sectors
             self.max_episode_steps = env_config.max_episode_steps
 
-            # Action parameters
-            self.max_actions_per_step = env_config.max_actions_per_step
-
             # Company parameters
             self.op_cost_rate = env_config.op_cost_rate
             self.initial_capital_min = env_config.initial_capital_min
@@ -62,6 +59,7 @@ class IndustryEnv(gym.Env):
 
             # Logistics
             self.disable_logistic_costs = env_config.disable_logistic_costs
+            self.free_delivery_distance = getattr(env_config, "free_delivery_distance", 5.0)
             self.tier_logistic_cost_rate = getattr(
                 env_config, "tier_logistic_cost_rate", {
                     "Raw": 0.05,
@@ -82,9 +80,10 @@ class IndustryEnv(gym.Env):
             self.tier_cogs = getattr(env_config, "tier_cogs", {})
 
             # Rewards
-            self.revenue_multiplier = env_config.revenue_multiplier
             self.creation_reward = env_config.creation_reward
             self.invalid_coordinate_penalty = env_config.invalid_coordinate_penalty
+            self.invalid_tier = env_config.invalid_tier
+            self.invalid_action = env_config.invalid_action
 
             # Product system parameters
             self.enable_products = getattr(env_config, "enable_products", True)
@@ -129,7 +128,6 @@ class IndustryEnv(gym.Env):
             self.max_company = 1000
             self.num_sectors = NUM_SECTORS
             self.max_episode_steps = 1000
-            self.max_actions_per_step = 10
             self.op_cost_rate = 0.05
             self.initial_capital_min = 10000.0
             self.initial_capital_max = 100000.0
@@ -144,6 +142,7 @@ class IndustryEnv(gym.Env):
             self.min_distance_epsilon = 0.1
             self.nearest_suppliers_count = 5
             self.disable_logistic_costs = False
+            self.free_delivery_distance = 5.0
             self.tier_logistic_cost_rate = {
                 "Raw": 0.05,
                 "Parts": 0.05,
@@ -157,9 +156,10 @@ class IndustryEnv(gym.Env):
             # 使用默认配置时，pricing必须从config读取，这里使用空字典
             self.tier_prices = {}
             self.tier_cogs = {}
-            self.revenue_multiplier = 0.001
             self.creation_reward = 5.0
             self.invalid_coordinate_penalty = -10.0
+            self.invalid_tier = -10.0
+            self.invalid_action = -10.0
 
             # Product system defaults
             self.enable_products = True
@@ -184,6 +184,7 @@ class IndustryEnv(gym.Env):
         self.num_firms = 0
 
         # Observation space: simplified to track firm count and aggregate metrics
+        # Includes current_tier (0-5) to inform model which tier is being operated
         self.observation_space = gym.spaces.Dict(
             {
                 "num_firms": gym.spaces.Discrete(self.max_company + 1),
@@ -199,6 +200,7 @@ class IndustryEnv(gym.Env):
                 "avg_revenue": gym.spaces.Box(
                     low=0.0, high=np.inf, shape=(1,), dtype=np.float32
                 ),
+                "current_tier": gym.spaces.Discrete(6),  # 0-5, indicating which tier is being operated
             }
         )
 
@@ -207,19 +209,24 @@ class IndustryEnv(gym.Env):
         self.map_min = -self.size / 2.0
         self.map_max = self.size / 2.0
         
-        # Simplified continuous action space for single action per step
+        # Action space with logits for action type only (tier is determined by environment rotation)
         # Box action space with 4 continuous components:
-        #   [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
-        #   [1]: x coordinate (continuous value in range [map_min, map_max])
-        #   [2]: y coordinate (continuous value in range [map_min, map_max])
-        #   [3]: tier (0.0-1.0, maps to [0,7] -> ceil -> 1-7 -> sector_id 0-6)
+        #   [0]: logits_invest (logit for invest action, bounded to [-10, 10])
+        #   [1]: logits_create (logit for create action, bounded to [-10, 10])
+        #   [2]: x coordinate (normalized to [-1, 1], will be scaled to [map_min, map_max] in step())
+        #   [3]: y coordinate (normalized to [-1, 1], will be scaled to [map_min, map_max] in step())
         # Note: Investment amount is fixed (configured via fixed_investment_amount)
         #       Creation capital is random within [new_company_capital_min, new_company_capital_max]
+        #       Action type is determined by softmax over [logits_invest, logits_create], taking argmax
+        #       Tier is determined by environment rotation (0-5, cycling through sectors)
         self.action_space = gym.spaces.Box(
-            low=np.array([0.0, self.map_min, self.map_min, 0.0], dtype=np.float32),
-            high=np.array([1.0, self.map_max, self.map_max, 1.0], dtype=np.float32),
+            low=np.array([-10.0, -10.0, -1.0, -1.0], dtype=np.float32),
+            high=np.array([10.0, 10.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
+        
+        # Track current tier for rotation (0-5, cycling through sectors)
+        self.current_tier_index = 0
 
         self.current_step = 0
 
@@ -381,9 +388,12 @@ class IndustryEnv(gym.Env):
                 supplier.products_sold_this_step += units_to_sell
                 
                 # Add logistic cost to customer (paid in cash immediately)
+                # Free local delivery: if distance <= free_delivery_distance, no logistic cost
                 if not self.disable_logistic_costs and hasattr(supplier, "logistic_cost_rate"):
-                    logistic_cost = supplier.logistic_cost_rate * unit_price * units_to_sell * max(dist, supplier.min_distance_epsilon)
-                    customer.capital -= logistic_cost  # Pay logistics cost in cash
+                    if dist > self.free_delivery_distance:
+                        logistic_cost = supplier.logistic_cost_rate * unit_price * units_to_sell * max(dist, supplier.min_distance_epsilon)
+                        customer.capital -= logistic_cost  # Pay logistics cost in cash
+                    # else: distance <= free_delivery_distance, logistic cost is waived
                 
                 # Track input cost per unit for customer's COGS calculation
                 sup_name = sector_relations[supplier.sector_id].name
@@ -501,6 +511,7 @@ class IndustryEnv(gym.Env):
                 "total_capital": np.array([0.0], dtype=np.float32),
                 "sector_counts": np.zeros(self.num_sectors, dtype=np.int32),
                 "avg_revenue": np.array([0.0], dtype=np.float32),
+                "current_tier": self.current_tier_index,
             }
 
         total_capital = sum(c.capital for c in self.companies)
@@ -516,6 +527,7 @@ class IndustryEnv(gym.Env):
             "total_capital": np.array([total_capital], dtype=np.float32),
             "sector_counts": sector_counts,
             "avg_revenue": np.array([avg_revenue], dtype=np.float32),
+            "current_tier": self.current_tier_index,
         }
 
     def _calculate_reward(self, info: Dict[str, Any]) -> float:
@@ -523,16 +535,34 @@ class IndustryEnv(gym.Env):
         Calculate the total reward for the current step.
 
         Reward formula:
-        reward = log10(net_growth + 1) if net_growth > 0 (profitable, scaled by magnitude)
-               = -1.0 if net_growth < 0 (loss, fixed penalty)
+        reward = log10(net_growth + 1) * 0.15 if net_growth > 0 (profitable, log-scaled)
+               = -log10(-net_growth + 1) * 0.15 if net_growth < 0 (loss, log-scaled)
                = 0.0 if net_growth == 0 (break-even)
-               + creation_reward (if created)
-               + invalid_coordinate_penalty (if coordinates out of bounds)
+               + creation_reward (if created, default 1.0)
+               + invalid_coordinate_penalty (if coordinates out of bounds, default -10.0)
+
+        Where net_growth = capital_growth - investment_amount
+        This represents the actual profit after deducting investment/creation costs.
+        
+        The profit/loss reward is multiplied by 0.15 to keep it in a range suitable for PPO learning.
+        Both positive and negative rewards use log10 scaling for consistent magnitude representation.
+        
+        Example: If investment is 80k and system total growth is 100k, then:
+        - capital_growth = 100k (includes investment + operational profit - logistic costs)
+        - investment_amount = 80k
+        - net_growth = 100k - 80k = 20k (actual profit after investment cost)
+        - profit_reward = log10(20k + 1) * 0.15 ≈ 0.645
+
+        Note: capital_growth includes:
+        - Investment/creation capital injection
+        - Operational profit/loss from company.step()
+        - Logistic costs from supply chain (paid immediately, reduces capital)
+        - Death company capital removal
 
         Args:
             info: Information dict containing:
-                - capital_growth: Total capital change in this step
-                - investment_amount: Amount invested (if action is invest)
+                - capital_growth: Total capital change in this step (includes investment + operational profit - logistic costs)
+                - investment_amount: Amount invested/created (cost to deduct from capital_growth)
                 - action_result: Result of the action
                 - coordinates_out_of_bounds: Whether coordinates were out of map range
 
@@ -541,17 +571,22 @@ class IndustryEnv(gym.Env):
         """
         reward = 0.0
 
-        # 1. System revenue reward: Log-scaled for profit, fixed penalty for loss
-        capital_growth = info.get("capital_growth", 0.0)
+        # 1. System revenue reward: Log-scaled for both profit and loss
+        capital_growth = info.get("capital_growth", 0.0) + 10000
         investment_amount = info.get("investment_amount", 0.0)
         net_growth = capital_growth - investment_amount
         if net_growth > 0:
             # 正利润：使用log10压缩，保留规模信息
-            reward += np.log10(net_growth + 1.0)
+            profit_reward = np.log10(net_growth + 1.0)
         elif net_growth < 0:
-            # 负利润：统一为-1.0，简化处理
-            reward += -1.0
-        # net_growth == 0 时 reward += 0，保持不变
+            # 负利润：同样使用log10压缩，但取负值
+            profit_reward = -np.log10(-net_growth + 1.0)*0.5
+        else:
+            # net_growth == 0 时 reward = 0
+            profit_reward = 0.1
+        
+        # 将利润reward乘以0.3，使其范围适合PPO学习
+        reward += profit_reward * 0.3
 
         # 2. Creation reward: Fixed bonus for creating new companies
         action_result = info.get("action_result", "unknown")
@@ -574,6 +609,7 @@ class IndustryEnv(gym.Env):
         self.companies = []
         self.num_firms = 0
         self.current_step = 0
+        self.current_tier_index = 0  # Reset tier rotation to 0
 
         # Optionally start with some initial companies
         if options and options.get("initial_firms", 0) > 0:
@@ -618,6 +654,7 @@ class IndustryEnv(gym.Env):
                         production_capacity_ratio=sector_production_ratio,
                         fixed_income=self.fixed_cost_per_step,
                         tier_prices=self.tier_prices,
+                        free_delivery_distance=self.free_delivery_distance,
                         tier_cogs=self.tier_cogs,
                     )
                 )
@@ -635,10 +672,12 @@ class IndustryEnv(gym.Env):
 
         Args:
             action: Numpy array with 4 continuous values:
-                [0]: action_type (0.0-1.0, <0.5=invest, >=0.5=create)
-                [1]: x coordinate (map_min to map_max, i.e., -size/2 to +size/2)
-                [2]: y coordinate (map_min to map_max, i.e., -size/2 to +size/2)
-                [3]: tier (0.0-1.0, maps to sector_id 0-6)
+                [0]: logits_invest (logit for invest action, bounded to [-10, 10])
+                [1]: logits_create (logit for create action, bounded to [-10, 10])
+                [2]: x coordinate (normalized to [-1, 1], will be scaled to [map_min, map_max])
+                [3]: y coordinate (normalized to [-1, 1], will be scaled to [map_min, map_max])
+                
+        Note: Tier is determined by environment rotation (current_tier_index, cycling 0-5)
 
         Returns:
             observation, reward, terminated, truncated, info
@@ -658,38 +697,42 @@ class IndustryEnv(gym.Env):
         # Decode action (ensure it's a numpy array)
         action = np.asarray(action, dtype=np.float32)
         
-        # Determine action type (invest or create)
-        action_type_value = float(action[0])
-        is_create = action_type_value >= 0.5
-        
-        # Get coordinates and check if they are out of bounds
-        x_coord_raw = float(action[1])
-        y_coord_raw = float(action[2])
-        
-        # Check if coordinates are out of bounds
-        if (x_coord_raw < self.map_min or x_coord_raw > self.map_max or
-            y_coord_raw < self.map_min or y_coord_raw > self.map_max):
+        # Check coordinates [2, 3] should be in [-1, 1] (only check for coordinates)
+        if (action[2] < -1.0 or action[2] > 1.0 or
+            action[3] < -1.0 or action[3] > 1.0):
             coordinates_out_of_bounds = True
         
-        # Clamp coordinates to valid range for execution
-        x_coord = float(np.clip(x_coord_raw, self.map_min, self.map_max))
-        y_coord = float(np.clip(y_coord_raw, self.map_min, self.map_max))
+        # Determine action type using softmax over [logits_invest, logits_create]
+        action_type_logits = action[0:2]  # [logits_invest, logits_create]
+        # Apply softmax
+        exp_logits = np.exp(action_type_logits - np.max(action_type_logits))  # Numerical stability
+        action_type_probs = exp_logits / np.sum(exp_logits)
+        # Take argmax to determine action type
+        is_create = int(np.argmax(action_type_probs)) == 1  # 0 = invest, 1 = create
         
-        # Get tier and map to sector_id
-        # tier [0,1] -> [0,7] -> ceil -> 1-7 -> sector_id 0-6
-        tier_normalized = float(np.clip(action[3], 0.0, 1.0))
-        tier_value = tier_normalized * 7.0  # Maps to [0, 7]
-        tier_ceiled = int(np.ceil(tier_value))  # Maps to [0, 7], but 0 becomes 1
-        # Clamp to 1-7 and convert to sector_id 0-6
-        tier_ceiled = max(1, min(7, tier_ceiled))
-        target_sector_id = tier_ceiled - 1  # Maps 1-7 to 0-6
+        # Use current tier from environment rotation (0-5, excluding Other/sector 6)
+        target_sector_id = self.current_tier_index
+        
+        # Get normalized coordinates from action (range [-1, 1])
+        x_coord_normalized = float(np.clip(action[2], -1.0, 1.0))
+        y_coord_normalized = float(np.clip(action[3], -1.0, 1.0))
+        
+        # Scale normalized coordinates [-1, 1] to map coordinates [map_min, map_max]
+        # Linear mapping: [-1, 1] -> [map_min, map_max]
+        map_range = self.map_max - self.map_min
+        map_center = (self.map_min + self.map_max) / 2.0
+        x_coord = x_coord_normalized * (map_range / 2.0) + map_center
+        y_coord = y_coord_normalized * (map_range / 2.0) + map_center
 
         if not is_create:
             # Investment action - use fixed investment amount
             amt = self.fixed_investment_amount
             
+            # Skip investment if amount is 0 (for pure internal simulation without external intervention)
+            if amt <= 0.0:
+                action_result = "no_action"
             # Find the closest company to (x_coord, y_coord) with matching sector_id
-            if self.num_firms > 0:
+            elif self.num_firms > 0:
                 min_distance = float('inf')
                 closest_company_idx = None
                 
@@ -753,6 +796,7 @@ class IndustryEnv(gym.Env):
                     production_capacity_ratio=sector_production_ratio,
                     fixed_income=self.fixed_cost_per_step,
                     tier_prices=self.tier_prices,
+                    free_delivery_distance=self.free_delivery_distance,
                     tier_cogs=self.tier_cogs,
                 )
                 self.companies.append(new_company)
@@ -845,6 +889,9 @@ class IndustryEnv(gym.Env):
             self.current_step >= self.max_episode_steps
         )  # Use configured max episode length
 
+        # Rotate tier for next step (cycle through 0-5)
+        self.current_tier_index = (self.current_tier_index + 1) % 6
+
         # Periodic visualization
         if self.visualize_every_n_steps > 0 and self.current_step % self.visualize_every_n_steps == 0:
             self.visualize_step()
@@ -866,23 +913,31 @@ class IndustryEnv(gym.Env):
             step_label = f"step_{self.current_step:06d}"
         
         # Use the create_dashboard function which expects an IndustryEnv object
-        create_dashboard(
+        # IMPORTANT: Receive the returned figure object
+        fig = create_dashboard(
             self,
             figsize=(self.figsize_width, self.figsize_height)
         )
+        
+        # Check if figure was created successfully
+        if fig is None:
+            print(f"Warning: Failed to create visualization at step {self.current_step}")
+            return
         
         # Save figure if enabled
         if self.save_plots:
             # Ensure the visualization directory exists
             Path(self.visualization_dir).mkdir(parents=True, exist_ok=True)
             filepath = Path(self.visualization_dir) / f"{step_label}.{self.plot_format}"
-            plt.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
+            # Use fig.savefig() instead of plt.savefig() to save the correct figure
+            fig.savefig(filepath, dpi=self.dpi, bbox_inches='tight')
         
         # Show figure if enabled
         if self.show_plots:
+            plt.figure(fig.number)  # Set the figure as current
             plt.show()
         else:
-            plt.close()
+            plt.close(fig)  # Close the specific figure
     
     def save_environment(self, filepath: Optional[str] = None) -> str:
         """

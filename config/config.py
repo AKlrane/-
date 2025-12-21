@@ -6,7 +6,7 @@ Simplified to two main categories: Environment and Training.
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 from env.sector import NUM_SECTORS
 
@@ -16,99 +16,64 @@ class EnvironmentConfig:
     """
     Complete environment configuration.
     Contains all parameters needed to initialize and run the simulation environment.
+    All values must be provided in config.json - no default values.
     """
     # Spatial and capacity parameters
-    size: float = 100.0
-    max_company: int = 1000
-    num_sectors: int = NUM_SECTORS
-    initial_firms: int = 10
-    max_episode_steps: int = 1000
-    
-    # Action parameters
-    max_actions_per_step: int = 10
+    size: Optional[float] = None
+    max_company: Optional[int] = None
+    num_sectors: Optional[int] = None
+    initial_firms: Optional[int] = None
+    max_episode_steps: Optional[int] = None
     
     # Company parameters
-    op_cost_rate: float = 0.05
-    initial_capital_min: float = 10000.0
-    initial_capital_max: float = 100000.0
-    fixed_investment_amount: float = 50000.0
-    new_company_capital_min: float = 1000.0
-    new_company_capital_max: float = 1000000.0
-    death_threshold: float = 0.0
-    fixed_cost_per_step: float = -5.0
+    op_cost_rate: Optional[float] = None
+    initial_capital_min: Optional[float] = None
+    initial_capital_max: Optional[float] = None
+    fixed_investment_amount: Optional[float] = None
+    new_company_capital_min: Optional[float] = None
+    new_company_capital_max: Optional[float] = None
+    death_threshold: Optional[float] = None
+    fixed_cost_per_step: Optional[float] = None
     
     # Supply chain parameters
-    trade_volume_fraction: float = 0.01
-    revenue_rate: float = 1.0
-    enable_supply_chain: bool = True
-    min_distance_epsilon: float = 0.1
-    nearest_suppliers_count: int = 5
+    trade_volume_fraction: Optional[float] = None
+    revenue_rate: Optional[float] = None
+    enable_supply_chain: Optional[bool] = None
+    min_distance_epsilon: Optional[float] = None
+    nearest_suppliers_count: Optional[int] = None
     
     # Logistic cost parameters
-    disable_logistic_costs: bool = False
-    tier_logistic_cost_rate: dict = field(default_factory=lambda: {
-        "Raw": 0.05,
-        "Parts": 0.05,
-        "Electronics": 0.05,
-        "Battery/Motor": 0.05,
-        "OEM": 0.05,
-        "Service": 0.05,
-        "Other": 0.05
-    })
+    disable_logistic_costs: Optional[bool] = None
+    free_delivery_distance: Optional[float] = None
+    tier_logistic_cost_rate: Optional[Dict[str, float]] = None
     
     # Management cost parameters
-    max_capital: float = 100000000.0  # 1 billion - threshold for logarithmic cost
+    max_capital: Optional[float] = None
     
-    # Pricing parameters
-    tier_prices: dict = field(default_factory=lambda: {
-        "Raw": 1.0,
-        "Parts": 50.0,
-        "Electronics": 120.0,
-        "Battery/Motor": 350.0,
-        "OEM": 4500.0,
-        "Service": 5500.0,
-        "Other": 10.5
-    })
-    tier_cogs: dict = field(default_factory=lambda: {
-        "Raw": 9.0,
-        "Other": 10.0
-    })
+    # Pricing parameters - must be provided in config.json
+    tier_prices: Optional[Dict[str, float]] = None
+    tier_cogs: Optional[Dict[str, float]] = None
     
     # Reward parameters
-    revenue_multiplier: float = 0.003
-    creation_reward: float = 10.0
-    invalid_coordinate_penalty: float = -100.0
+    creation_reward: Optional[float] = None
+    invalid_coordinate_penalty: Optional[float] = None
+    invalid_tier: Optional[float] = None
+    invalid_action: Optional[float] = None
     
     # Visualization parameters
-    figsize_width: int = 18
-    figsize_height: int = 12
-    dpi: int = 600
-    show_plots: bool = False
-    save_plots: bool = True
-    plot_format: str = "png"
-    visualize_every_n_steps: int = 0  # 0 = disable periodic visualization, >0 = visualize every N steps
-    visualization_dir: str = "visualizations"  # Directory to save visualizations
+    figsize_width: Optional[int] = None
+    figsize_height: Optional[int] = None
+    dpi: Optional[int] = None
+    show_plots: Optional[bool] = None
+    save_plots: Optional[bool] = None
+    plot_format: Optional[str] = None
+    visualize_every_n_steps: Optional[int] = None
+    visualization_dir: Optional[str] = None
     
     # Product system parameters
-    enable_products: bool = True
-    tier_production_ratios: dict = field(default_factory=lambda: {
-        "Raw": 0.5,
-        "Parts": 0.3,
-        "Electronics": 0.3,
-        "Battery/Motor": 0.3,
-        "OEM": 0.2,
-        "Service": 0.1,
-        "Other": 0.1
-    })
-    max_held_capital_rate: dict = field(default_factory=lambda: {
-        "Raw": 0.3,
-        "Parts": 0.4,
-        "Electronics": 0.4,
-        "Battery/Motor": 0.4,
-        "OEM": 0.3,
-        "Service": 0.2,
-        "Other": 0.3
-    })
+    enable_products: Optional[bool] = None
+    tier_production_ratios: Optional[Dict[str, float]] = None
+    max_held_capital_rate: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -116,50 +81,51 @@ class TrainingConfig:
     """
     Complete training configuration.
     Contains all parameters needed for RL training, checkpointing, and evaluation.
+    All values must be provided in config.json - no default values.
     """
     # RL framework and algorithm
-    framework: str = "sb3"
-    algorithm: str = "ppo"
+    framework: Optional[str] = None
+    algorithm: Optional[str] = None
     
     # Training hyperparameters
-    total_timesteps: int = 100000
-    num_envs: int = 4
-    learning_rate: float = 0.0003
-    batch_size: int = 64
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_range: float = 0.2
-    ent_coef: float = 0.0
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    n_steps: int = 2048
-    n_epochs: int = 10
-    seed: int = 42
-    verbose: int = 1
-    device: str = "auto"  # "auto", "cuda", "cpu", "cuda:0", "cuda:1", etc.
+    total_timesteps: Optional[int] = None
+    num_envs: Optional[int] = None
+    learning_rate: Optional[float] = None
+    batch_size: Optional[int] = None
+    gamma: Optional[float] = None
+    gae_lambda: Optional[float] = None
+    clip_range: Optional[float] = None
+    ent_coef: Optional[float] = None
+    vf_coef: Optional[float] = None
+    max_grad_norm: Optional[float] = None
+    n_steps: Optional[int] = None
+    n_epochs: Optional[int] = None
+    seed: Optional[int] = None
+    verbose: Optional[int] = None
+    device: Optional[str] = None
     
     # Checkpointing and logging
-    log_dir: str = "./logs"
-    checkpoint_dir: str = "./checkpoints"
-    save_freq: int = 10000
-    eval_freq: int = 5000
-    visualize_freq: int = 10000
-    n_eval_episodes: int = 10
-    save_best_model: bool = True
+    log_dir: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
+    save_freq: Optional[int] = None
+    eval_freq: Optional[int] = None
+    visualize_freq: Optional[int] = None
+    n_eval_episodes: Optional[int] = None
+    save_best_model: Optional[bool] = None
     
     # Advanced features
-    normalize_observations: bool = False
-    normalize_rewards: bool = False
-    clip_observations: float = 10.0
-    clip_rewards: float = 10.0
-    frame_stack: int = 1
+    normalize_observations: Optional[bool] = None
+    normalize_rewards: Optional[bool] = None
+    clip_observations: Optional[float] = None
+    clip_rewards: Optional[float] = None
+    frame_stack: Optional[int] = None
 
 
 @dataclass
 class Config:
     """Main configuration container with only two categories: Environment and Training."""
-    environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
+    environment: Optional[EnvironmentConfig] = None
+    training: Optional[TrainingConfig] = None
     
     @classmethod
     def from_json(cls, json_path: str = "config/config.json") -> "Config":
@@ -174,38 +140,72 @@ class Config:
             Config object with loaded parameters
         """
         if not os.path.exists(json_path):
-            print(f"⚠️  Config file not found: {json_path}")
-            print("   Using default configuration")
-            return cls()
+            raise FileNotFoundError(
+                f"Config file not found: {json_path}\n"
+                "All configuration must be provided in config.json - no default values."
+            )
         
         with open(json_path, 'r') as f:
             data = json.load(f)
         
         config = cls()
         
-        # Load environment section
-        if "environment" in data:
-            env_data = data["environment"]
-            
-            # Check if environment has subcategories
-            if any(isinstance(v, dict) for v in env_data.values()):
-                # Nested structure - flatten it
-                flat_env_data = {}
-                for key, value in env_data.items():
-                    if isinstance(value, dict):
-                        # Merge subcategory into flat structure
-                        flat_env_data.update(value)
-                    else:
-                        # Keep top-level values
-                        flat_env_data[key] = value
-                config.environment = EnvironmentConfig(**flat_env_data)
-            else:
-                # Flat structure (backward compatible)
-                config.environment = EnvironmentConfig(**env_data)
+        # Load environment section - required
+        if "environment" not in data:
+            raise ValueError("'environment' section is required in config.json")
         
-        # Load training section
-        if "training" in data:
-            config.training = TrainingConfig(**data["training"])
+        env_data = data["environment"]
+        
+        # Check if environment has subcategories
+        if any(isinstance(v, dict) for v in env_data.values()):
+            # Nested structure - flatten it
+            flat_env_data = {}
+            for key, value in env_data.items():
+                if isinstance(value, dict):
+                    # Merge subcategory into flat structure
+                    flat_env_data.update(value)
+                else:
+                    # Keep top-level values
+                    flat_env_data[key] = value
+            env_config = EnvironmentConfig(**flat_env_data)
+        else:
+            # Flat structure (backward compatible)
+            env_config = EnvironmentConfig(**env_data)
+        
+        # Validate that all required fields are provided (not None)
+        # This ensures config.json contains all necessary values
+        missing_fields = []
+        for field_name, field_value in env_config.__dict__.items():
+            if field_value is None:
+                missing_fields.append(field_name)
+        
+        if missing_fields:
+            raise ValueError(
+                f"Missing required fields in config.json environment section: {', '.join(missing_fields)}\n"
+                "All configuration values must be provided in config.json - no default values."
+            )
+        
+        config.environment = env_config
+        
+        # Load training section - required
+        if "training" not in data:
+            raise ValueError("'training' section is required in config.json")
+        
+        train_config = TrainingConfig(**data["training"])
+        
+        # Validate that all required fields are provided (not None)
+        missing_fields = []
+        for field_name, field_value in train_config.__dict__.items():
+            if field_value is None:
+                missing_fields.append(field_name)
+        
+        if missing_fields:
+            raise ValueError(
+                f"Missing required fields in config.json training section: {', '.join(missing_fields)}\n"
+                "All configuration values must be provided in config.json - no default values."
+            )
+        
+        config.training = train_config
         
         return config
     
@@ -258,9 +258,10 @@ class Config:
         print(f"   Logistic costs disabled: {self.environment.disable_logistic_costs}")
         
         print("\n🎁 Rewards:")
-        print(f"   Revenue multiplier: {self.environment.revenue_multiplier}")
         print(f"   Creation reward: {self.environment.creation_reward}")
         print(f"   Invalid coordinate penalty: {self.environment.invalid_coordinate_penalty}")
+        print(f"   Invalid tier penalty: {self.environment.invalid_tier}")
+        print(f"   Invalid action penalty: {self.environment.invalid_action}")
         
         print("\n🤖 Training:")
         print(f"   Framework: {self.training.framework}")
